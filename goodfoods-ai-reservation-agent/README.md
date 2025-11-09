@@ -146,10 +146,3 @@ Growth roadmap:
 - Email delivery requires valid SMTP configuration.
 - Frontend interactive components (sidebar) are under development and may be incomplete.
 
-## Contributing
-
-Please open issues or pull requests. Include tests or reproduction steps for code changes.
-
-## License
-
-Choose and add an appropriate license for the project.

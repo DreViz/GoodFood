@@ -2,6 +2,10 @@
 
 An AI-powered restaurant reservation system that provides a natural-language interface for booking tables, checking availability, and getting personalized recommendations.
 
+
+## Demo Video is attached in the email
+
+
 ## Features
 
 - Natural-language booking conversations

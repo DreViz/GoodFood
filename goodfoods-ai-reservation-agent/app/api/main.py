@@ -1,6 +1,13 @@
 # app/api/main.py
 from fastapi import FastAPI, Request
 from dotenv import load_dotenv
+from app.agent.planner_agent import memory
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
 
 from app.api.routes import (
     restaurants,
@@ -45,7 +52,7 @@ def reset_conversation_memory():
     Called once by the Streamlit frontend when the page is refreshed.
     """
     try:
-        conversation_memory.reset()
+        memory.reset()
         return {"ok": True, "message": " Conversation memory cleared successfully."}
     except Exception as e:
         return {"ok": False, "error": str(e)}

@@ -39,6 +39,8 @@ setTimeout(() => {
 </script>
 """, unsafe_allow_html=True)
 
+
+
 # ---------- GLOBAL CSS ----------
 st.markdown(
     """
@@ -88,11 +90,13 @@ st.markdown(
       border: 1px solid rgba(0,0,0,0.06);
     }
     .chat-bubble-assistant {
-      background: rgba(255,255,255,0.03); color: #eaeaea;
-      border-radius: 12px; padding: 10px 13px; margin: 8px 0;
-      display: inline-block; max-width: 92%;
-      border: 1px solid rgba(255,255,255,0.04);
+    background: rgba(255,255,255,0.03); color: #eaeaea;
+    border-radius: 12px; padding: 10px 13px; margin: 8px 0;
+    display: inline-block; max-width: 92%;
+    border: 1px solid rgba(255,255,255,0.04);
+    white-space: pre-wrap !important;
     }
+
 
     div[data-testid="stChatInput"] {
       background: #202223 !important;
@@ -117,7 +121,17 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
+if st.button("🔄 Reset Conversation"):
+    try:
+        res = requests.post("http://127.0.0.1:8000/agent/memory/reset", timeout=4)
+        if res.status_code == 200:
+            st.session_state.messages = []
+            st.success("Conversation reset.")
+            st.rerun()
+        else:
+            st.warning("Failed to reset memory.")
+    except Exception as e:
+        st.warning(f"Error resetting: {e}")
 # ---------- SIDEBAR ----------
 with st.sidebar:
     st.markdown(
@@ -222,8 +236,6 @@ def build_context_from_history(messages, limit=10):
         role = "User" if msg["role"] == "user" else "Assistant"
         formatted.append(f"{role}: {msg['content']}")
     return "\n".join(formatted).strip()
-
-
 # ---------- CHAT INPUT + STREAMING ----------
 user_text = st.chat_input("Ask, book, or explore restaurants…")
 
@@ -231,57 +243,72 @@ if user_text:
     st.session_state.messages.append({"role": "user", "content": user_text})
     st.markdown(f'<div class="chat-bubble-user">{user_text}</div>', unsafe_allow_html=True)
 
+    # Build context from limited chat history
     history_text = build_context_from_history(st.session_state.messages, limit=8)
+
     placeholder = st.empty()
     full_response = ""
 
-    # 🧠 Update backend memory before chatting
-    try:
-        mem_res = requests.post("http://127.0.0.1:8000/agent/memory/update", json={"text": user_text}, timeout=6)
-        if mem_res.status_code != 200:
-            st.warning("⚠️ Memory update failed, continuing without it.")
-    except Exception as e:
-        st.warning(f"⚠️ Could not sync conversation memory: {e}")
+    # IMPORTANT:
+    # LLM planner + backend tool handler will now manage memory correctly.
 
     with st.chat_message("assistant"):
         st.markdown('<div class="chat-bubble-assistant">', unsafe_allow_html=True)
         try:
             payload = {"query": user_text, "context": history_text}
+
             with requests.post(API_URL, json=payload, stream=True, timeout=60) as resp:
                 client = sseclient.SSEClient(resp)
+
                 for event in client.events():
                     if not event.data:
                         continue
                     if event.data == "[DONE]":
                         break
+
                     try:
                         data = json.loads(event.data)
+
+                        # LLM token stream
                         if "message" in data:
                             full_response += data["message"]
                             placeholder.markdown(
                                 f'<div class="chat-bubble-assistant">{full_response}▌</div>',
                                 unsafe_allow_html=True,
                             )
+
+                        # Tool output (availability list, booking details, etc.)
                         elif "tool_output" in data:
                             placeholder.markdown(
-                                f'<div class="chat-bubble-assistant">{full_response}<br><pre style="background:#0f1112;color:#dcdcdc;padding:10px;border-radius:8px;">{json.dumps(data["tool_output"], indent=2)}</pre></div>',
+                                f'<div class="chat-bubble-assistant">'
+                                f'{full_response}<br>'
+                                f'<pre style="background:#0f1112;color:#dcdcdc;padding:10px;border-radius:8px;">'
+                                f'{json.dumps(data["tool_output"], indent=2)}'
+                                f'</pre></div>',
                                 unsafe_allow_html=True,
                             )
+
                     except Exception:
+                        # raw stream fallback
                         full_response += event.data
                         placeholder.markdown(
                             f'<div class="chat-bubble-assistant">{full_response}▌</div>',
                             unsafe_allow_html=True,
                         )
+
+            # final rendering (remove cursor)
             placeholder.markdown(
                 f'<div class="chat-bubble-assistant">{full_response}</div>',
                 unsafe_allow_html=True,
             )
+
         except Exception as e:
             placeholder.markdown(
                 f'<div class="chat-bubble-assistant">Sorry — streaming failed: {e}</div>',
                 unsafe_allow_html=True,
             )
+
         st.markdown('</div>', unsafe_allow_html=True)
 
+    # Save assistant message to history
     st.session_state.messages.append({"role": "assistant", "content": full_response})

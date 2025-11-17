@@ -18,40 +18,98 @@ with open(RESPONDER_PROMPT_PATH, "r", encoding="utf-8") as f:
 
 
 # ---------------- Helper Functions ----------------
+
+def normalize_reservation_error(error_text: str) -> str:
+    """
+    Converts raw SQL/technical errors into user-friendly messages.
+    """
+
+    if not error_text:
+        return "Something went wrong."
+
+    txt = error_text.lower()
+
+    # Duplicate booking constraint
+    if "unique_customer_booking_per_slot" in txt or "duplicate key" in txt:
+        return (
+            "You already have a reservation for this restaurant at that date and time."
+        )
+
+    # Invalid restaurant
+    if "restaurant" in txt and "not found" in txt:
+        return "I couldn’t find that restaurant."
+
+    # Invalid email
+    if "invalid customer_email" in txt:
+        return "The email address doesn’t seem to be valid."
+
+    # Invalid date or time
+    if "missing required date" in txt:
+        return "The reservation date is missing."
+    if "missing required time" in txt:
+        return "The reservation time is missing."
+
+    # DB or system-level error fallback
+    if "psycopg2" in txt or "sqlalchemy" in txt:
+        return "There was a system issue while creating the reservation."
+
+    # Final fallback
+    return error_text
+
 def format_reservation_message(result: dict) -> str:
     """Format a user-friendly reservation confirmation or error message."""
+
     if result.get("ok"):
+        # Email was NOT sent
+        if result.get("email_sent") is False:
+            return (
+                f"Your reservation at {result['restaurant']} is confirmed for "
+                f"{result.get('date')} at {result.get('time')}. "
+                "However, we couldn’t send a confirmation email to that address. "
+                "Would you like to update the email?"
+            )
+
+        # Email SUCCESS
         return (
-            f"🎉 Your reservation at {result['restaurant']} is confirmed!\n"
-            f"📅 Date: {result.get('date')}\n"
-            f"⏰ Time: {result.get('time')}\n"
-            f"📧 Confirmation sent to {result.get('customer_email')}. Enjoy your meal! 🍽️"
+            f"Your reservation is confirmed at {result['restaurant']} on "
+            f"{result.get('date')} at {result.get('time')}. "
+            f"The confirmation email has been sent to {result.get('customer_email')}. "
+            "Would you like anything else?"
         )
-    else:
-        return f"⚠️ Sorry, there was an issue creating your reservation: {result.get('error', 'Unknown error')}"
+
+    # Reservation FAILURE
+    friendly_error = normalize_reservation_error(result.get("error"))
+    return (
+        f"{friendly_error} "
+        "Would you like to try a different time?"
+    )
+
+
 
 
 # ---------------- Main Responder Function ----------------
 def call_responder_llm(user_text: str, tool_output: dict) -> str:
     """
     Converts structured tool_output into a natural, conversational reply.
-    Ensures plain text (no JSON or markdown) from the model.
+    No cleaning or post-processing.
     """
-    # Special handling for reservation responses
-    if tool_output.get("action") == "create_reservation":
-        return format_reservation_message(tool_output)
 
-    # Build the complete prompt for the model
+    logger.info(f"[RESPONDER] Received structured payload: {json.dumps(tool_output, indent=2, ensure_ascii=False)}")
+
+    # Special formatting for reservation messages
+    if tool_output.get("action") == "create_reservation":
+        return format_reservation_message(tool_output.get("result", {}))
+
+    # Build the complete LLM prompt
     prompt = (
         f"{RESPONDER_PROMPT.strip()}\n\n"
         f"User said: {user_text.strip()}\n"
         f"Tool result (structured):\n{json.dumps(tool_output, indent=2, ensure_ascii=False)}\n\n"
-        "Now reply naturally to the user in plain text. If multiple restaurants are found, list the top 3 by name and describe each briefly.\n"
-        "Do NOT include JSON, markdown, or system instructions — only human-friendly dialogue.\n"
+        "Write only the final user-facing message.\n"
     )
 
+
     try:
-        # Send to Ollama
         r = requests.post(
             OLLAMA_ENDPOINT,
             json={"model": MODEL, "prompt": prompt, "stream": False},
@@ -59,26 +117,17 @@ def call_responder_llm(user_text: str, tool_output: dict) -> str:
         )
         r.raise_for_status()
 
-        # Parse response
         data = r.json()
         raw_reply = str(data.get("response") or data.get("text") or "").strip()
 
-        # Clean any unwanted formatting
-        cleaned = (
-            raw_reply.replace("```", "")
-            .replace("json", "")
-            .replace("JSON", "")
-            .replace("{", "")
-            .replace("}", "")
-            .strip()
-        )
+        # 🔥 NO CLEANING AT ALL
+        cleaned = raw_reply
 
-        if "GoodFoods Concierge" in cleaned and len(cleaned) > 500:
-            cleaned = cleaned.split("GoodFoods Concierge")[-1].strip()
-
+        # Only minimal safety fallback
         if not cleaned or len(cleaned) < 2:
-            cleaned = "I'm here to help — could you please repeat that?"
+            cleaned = "I'm here to help — could you repeat that?"
 
+        logger.warning(f"\n\n\n cleaned  {cleaned}\n\n")
         return cleaned
 
     except Exception as e:

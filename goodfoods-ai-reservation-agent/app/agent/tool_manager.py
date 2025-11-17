@@ -29,7 +29,7 @@ class ToolManager:
             schema = {}
             if name in tool_spec:
                 # Default all args to string if not typed
-                schema = {arg: str for arg in tool_spec[name].get("args", [])}
+                schema = {arg: (str, type(None)) for arg in tool_spec[name].get("args", [])}
             self.register(name, fn, schema)
         logger.info(f"Registered {len(tool_functions)} tools successfully")
 
@@ -50,12 +50,6 @@ class ToolManager:
         schema = tool["schema"]
         fn = tool["fn"]
 
-        # Validate required args
-        missing = [k for k in schema.keys() if k not in kwargs]
-        if missing:
-            return {"ok": False, "error": f"Missing args: {missing}"}
-
-        # Type validation (optional)
         for key, expected_type in schema.items():
             if kwargs.get(key) is not None and not isinstance(kwargs[key], expected_type):
                 logger.warning(f"Arg type mismatch for {key}: expected {expected_type}, got {type(kwargs[key])}")

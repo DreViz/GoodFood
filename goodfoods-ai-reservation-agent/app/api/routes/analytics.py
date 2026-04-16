@@ -35,17 +35,13 @@ def analytics_summary():
 def analytics_popular_cuisines():
     session = SessionLocal()
     try:
-        # Each restaurant has cuisines in JSON (list)
         restaurants = session.query(Restaurant).all()
         cuisine_count = {}
 
         for r in restaurants:
-            # Skip if null
-            if hasattr(r, "menu_items"):
-                for item in r.menu_items:
-                    cuisine_count[item.item] = cuisine_count.get(item.item, 0) + 1
+            for cuisine in (r.cuisines or []):
+                cuisine_count[cuisine] = cuisine_count.get(cuisine, 0) + 1
 
-        # Top 5 cuisines
         top_cuisines = sorted(cuisine_count.items(), key=lambda x: x[1], reverse=True)[:5]
         return {"top_cuisines": [{"name": c, "count": n} for c, n in top_cuisines]}
     finally:

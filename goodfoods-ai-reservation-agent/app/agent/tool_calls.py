@@ -463,18 +463,18 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("[Dispatch] Tool requested: %s", name)
         logger.debug("[Dispatch Args] %s", json.dumps(args, indent=2, default=str))
 
-        # Normalize incoming keys
-        rename_map = {"restaurant_name": "restaurant", "zone": None}
-        normalized_args = {rename_map.get(k, k): v for k, v in args.items() if rename_map.get(k, k) is not None}
+        normalized_args = dict(args)
+
+        # Handle occasional LLM output of "restaurant_name" instead of "restaurant"
+        if "restaurant_name" in normalized_args and "restaurant" not in normalized_args:
+            normalized_args["restaurant"] = normalized_args.pop("restaurant_name")
 
         func = TOOL_FUNCTIONS.get(name)
         if not func:
             logger.warning("Unknown tool requested: %s", name)
             return {"error": f"Unknown tool '{name}'"}
 
-        # If function expects a restaurant -> try to map to location_id where helpful
-        # Tools that can accept either 'restaurant' or 'location_id' are handled inside each function,
-        # but for convenience we translate 'restaurant' -> 'location_id' here if necessary.
+        # Map restaurant -> location_id for tools that need both
         needs_mapping = name in {"check_availability", "create_reservation", "get_seating_labels", "get_seating_map", "get_amenities"}
         if needs_mapping and "restaurant" in normalized_args and "location_id" not in normalized_args:
             restaurant_name = normalized_args.get("restaurant")
@@ -482,7 +482,6 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             rest = session.query(Restaurant).filter(Restaurant.unit_name.ilike(f"%{restaurant_name}%")).first()
             if rest:
                 normalized_args["location_id"] = rest.location_id
-                # keep restaurant too for logging / downstream uses
                 logger.info("Mapped restaurant '%s' → location_id=%s", restaurant_name, rest.location_id)
             else:
                 return {"error": f"Restaurant '{restaurant_name}' not found."}

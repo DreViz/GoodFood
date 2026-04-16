@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from app.agent.mock_llm import mock_planner_output; print\\('mock_llm OK'\\); from app.agent.tool_calls import dispatch_tool, TOOL_FUNCTIONS; print\\(f'Tools registered: {list\\(TOOL_FUNCTIONS.keys\\(\\)\\)}'\\)\")",
+      "Bash(\"app/.venv/Scripts/python.exe\" -c \"from app.agent.agent import process_user_query; print\\('agent.py imports OK'\\)\")",
+      "Bash(\".venv/Scripts/python.exe\" -c \"from app.agent.agent import process_user_query; print\\('agent.py imports OK'\\)\")",
+      "Bash(\".venv/Scripts/python.exe\" -c \"from app.api.main import app; print\\('FastAPI app loads OK'\\)\")",
+      "Bash(.venv/Scripts/python.exe -c ' *)"
+    ]
+  }
+}

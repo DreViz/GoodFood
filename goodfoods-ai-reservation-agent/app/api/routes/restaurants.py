@@ -21,17 +21,6 @@ def get_restaurants(limit: int = 10):
     return data
 
 
-@router.get("/{restaurant_id}/menu", summary="Get restaurant menu")
-def get_menu(restaurant_id: int):
-    logger.info(f"[API] /restaurants/{restaurant_id}/menu → Fetching menu")
-    session = SessionLocal()
-    menu = session.query(MenuItem).filter_by(restaurant_id=restaurant_id).all()
-    data = [{"item": m.item, "price": m.price, "veg": m.veg} for m in menu]
-    session.close()
-    logger.info(f"[API] Returned {len(data)} menu items")
-    return data
-
-
 @router.get("/{restaurant_id}/slots", summary="Check available slots for a restaurant")
 def check_availability(restaurant_id: int, date: str, party_size: int):
     logger.info(f" [API] /restaurants/{restaurant_id}/slots → Checking availability for {date}, party_size={party_size}")

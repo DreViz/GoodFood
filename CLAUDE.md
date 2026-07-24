@@ -18,8 +18,6 @@ python -m scripts.load_restaurants
 python -m scripts.add_opening_hours
 
 # Start the backend API (port 8000)
-python -m app.api.main
-# or via uvicorn:
 uvicorn app.api.main:app --reload --port 8000
 
 # Start the Streamlit frontend (port 8501)
@@ -56,20 +54,25 @@ The planner operates in phases controlled by `ConversationMemory.state["phase"]`
 
 - **Phase 3 — Booking** (`planner_prompt_phase3.txt`): Collect missing booking fields (email, seating preference). Confirms reservation via `create_reservation`.
 
-Each phase has its own prompt file in `app/agent/`. The generic `planner_prompt.txt` combines all phases but is **not used at runtime** — `planner_agent.py` selects the phase-specific file via `load_prompt_for_phase()`.
+Each phase has its own prompt file in `app/agent/` (`planner_prompt_phase1/2/3.txt`). `planner_agent.py` selects the active prompt via `load_prompt_for_phase()` based on `memory.state["phase"]` (`discovery` → phase1, `availability` → phase2, `booking` → phase3). There is no generic/combined prompt file.
 
 ### Conversation Memory
 
 `app/agent/conversation_memory.py` — Pure key-value state (`phase`, `restaurant`, `date`, `time`, `party_size`, `customer_email`, `seating_pref`, etc.). Only the planner updates memory (via `update_from_planner`). No NLP parsing — the LLM decides what to store.
 
-The `planner_agent.py` has safety functions (`safe_extract_party_size`, `safe_extract_date`, `strip_memory_if_unsupported`) that prevent the LLM from storing hallucinated or invalid values into memory.
+`planner_agent.py` has two layers of safety logic that gate the LLM's output before any tool runs:
+- **Field cleaners** (`safe_extract_party_size`, `safe_extract_date`, `safe_extract_time`, `strip_memory_if_unsupported`) filter hallucinated or invalid values (e.g. `party_size=0`) before they reach memory.
+- **Hardcoded interceptors** in `call_planner_llm` (after `validate_planner_json`) override specific planner decisions: early email capture in booking phase, blocking `create_reservation` when required fields are missing from memory, and intercepting `get_booking_details` to ask for confirmation instead. These guards live in Python, not in the prompt — editing the prompt alone will not change them.
+
+Note: there are two `ConversationMemory` instances at runtime — the module-level `memory` in `planner_agent.py` (used by the actual agent flow) and a separate `conversation_memory` in `main.py` (used by `/agent/memory/update`). The frontend only calls `/agent/memory/reset`, which resets the planner-side instance. Memory changes should target the planner-side `memory`.
 
 ### Tool System
 
-- **`app/agent/tool_calls.py`** — Defines `TOOL_SPEC` (metadata) and `TOOL_FUNCTIONS` (implementations). All tools query PostgreSQL via SQLAlchemy `SessionLocal`. The `dispatch_tool` function normalizes args and resolves restaurant names to `location_id`.
-- **`app/agent/tool_manager.py`** — Generic tool registry (`ToolManager` class). Tools are registered at import time in `agent.py`.
+- **`app/agent/tool_calls.py`** — Defines `TOOL_SPEC` (metadata) and `TOOL_FUNCTIONS` (implementations). All tools query PostgreSQL via SQLAlchemy `SessionLocal`. The `dispatch_tool(name, args)` function normalizes args, resolves restaurant names to `location_id` via fuzzy matching, and dispatches to the implementation. There is no separate registry class — `agent.py` calls `dispatch_tool` directly.
 
-Available tools: `search_restaurants_by_filters`, `recommend_venues`, `check_availability`, `create_reservation`, `get_seating_map`, `get_amenities`, `get_booking_details`, `get_seating_labels`.
+The planner's `allowed_actions` whitelist in `planner_agent.py` is the source of truth for what the planner *may* emit; `TOOL_SPEC` in `tool_calls.py` is the source of truth for what is *actually implemented*. `modify_reservation` is currently whitelisted but not implemented (no entry in `TOOL_SPEC`).
+
+Available tools (in `TOOL_SPEC`): `search_restaurants_by_filters`, `recommend_venues`, `check_availability`, `create_reservation`, `get_seating_map`, `get_amenities`, `get_booking_details`, `get_seating_labels`.
 
 ### API Layer
 
@@ -84,7 +87,10 @@ Available tools: `search_restaurants_by_filters`, `recommend_venues`, `check_ava
 | `/availability` | `routes/availability.py` | Availability check endpoint |
 | `/notifications` | `routes/notifications.py` | Email sending |
 | `/analytics` | `routes/analytics.py` | Platform-wide analytics |
-| `/preferences` | `routes/preferences.py` | Customer preference storage |
+
+Two agent-memory endpoints are attached directly to the app in `main.py` (not via a router): `POST /agent/memory/reset` (called by the Streamlit frontend on page refresh) and `POST /agent/memory/update`.
+
+`routes/preferences.py` exists on disk but is **not mounted** in `main.py`.
 
 ### Database
 

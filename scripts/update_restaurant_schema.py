@@ -1,6 +1,6 @@
 # scripts/update_restaurant_schema.py
 from sqlalchemy import text
-from app.data.db_connection import engine  # ✅ uses same connection as your app
+from app.data.db_connection import engine  # uses same connection as your app
 
 alter_statements = [
     "ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS cuisines JSONB DEFAULT '[]';",
@@ -20,4 +20,4 @@ with engine.connect() as conn:
         conn.execute(text(stmt))
     conn.commit()
 
-print("✅ Restaurant schema successfully updated.")
+print("Restaurant schema successfully updated.")

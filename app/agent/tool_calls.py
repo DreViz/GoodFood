@@ -14,9 +14,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------
-# TOOL SPEC (for LLM & registration)
-# -----------------------------------------------------
+# Tool metadata exposed to the planner LLM.
 TOOL_SPEC = {
     "search_restaurants_by_filters": {
         "description": "Find restaurants by cuisine, zone, price, rating, or tag filters.",
@@ -50,13 +48,18 @@ TOOL_SPEC = {
         "description": "Returns only seating section labels for a restaurant.",
         "args": ["restaurant"],
     },
+    "cancel_reservation": {
+        "description": "Cancel the customer's most recent confirmed reservation (by email).",
+        "args": ["customer_email"],
+    },
+    "modify_reservation": {
+        "description": "Modify the customer's most recent confirmed reservation (date/time/party_size/seating).",
+        "args": ["customer_email", "new_date", "new_time", "new_party_size", "new_seating_pref"],
+    },
 }
 
-# -----------------------------------------------------
-# Helper: normalize restaurant name for fuzzy matching
-# -----------------------------------------------------
 def normalize_name(name: str) -> str:
-    """Normalize restaurant name for fuzzy matching."""
+    """Normalize a restaurant name for fuzzy matching."""
     if not name:
         return ""
     name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("utf-8")
@@ -64,9 +67,6 @@ def normalize_name(name: str) -> str:
     name = re.sub(r"\s+", " ", name).strip().lower()
     return name
 
-# -----------------------------------------------------
-# CORE TOOL IMPLEMENTATIONS
-# -----------------------------------------------------
 
 def search_restaurants(cuisine=None, zone=None, max_price=None, min_rating=None, tag=None, limit=5):
     """Search restaurants dynamically. Returns {'ok': True, 'results': [...] } on success."""
@@ -374,15 +374,14 @@ def create_reservation(
         session.commit()
         session.refresh(reservation)
 
-        # ----------------------------
         # Email sending (best effort)
-        # ----------------------------
         email_sent = True
         try:
+            # send_email signature is (recipient, subject, body) — see email_service.py
             send_email(
-                to_email=cust.email,    # keep your existing call unchanged
-                subject="Your GoodFoods reservation is confirmed!",
-                body_html=f"""
+                cust.email,
+                "Your GoodFoods reservation is confirmed!",
+                f"""
                     <b>Reservation Confirmed!</b><br>
                     Restaurant: {rest.unit_name}<br>
                     Date: {date}<br>
@@ -417,6 +416,198 @@ def create_reservation(
         session.close()
 
 
+def _latest_confirmed_reservation(session, customer_email: str):
+    """
+    Return (reservation, restaurant, customer) for the customer's most recent
+    CONFIRMED reservation, or None.
+
+    "One active reservation per customer email" is defined as the most recent
+    status='confirmed' row (ordered by date, then time). This is the single
+    reservation that cancel/modify operate on.
+    """
+    if not customer_email or "@" not in customer_email:
+        return None
+    cust = session.query(Customer).filter_by(email=customer_email).first()
+    if not cust:
+        return None
+    row = (
+        session.query(Reservation, Restaurant)
+        .join(Restaurant, Reservation.restaurant_id == Restaurant.id)
+        .filter(Reservation.customer_id == cust.id, Reservation.status == "confirmed")
+        .order_by(Reservation.date.desc(), Reservation.time.desc())
+        .first()
+    )
+    if not row:
+        return None
+    reservation, restaurant = row
+    return reservation, restaurant, cust
+
+
+def cancel_reservation(customer_email: str = None, **kwargs):
+    """
+    Cancel the customer's most recent confirmed reservation.
+
+    Soft-delete only: status -> 'cancelled' (never hard-deleted, preserving
+    history). Sends a best-effort cancellation email. Returns {ok: False, ...}
+    when there is no active reservation for the email.
+    """
+    session = SessionLocal()
+    try:
+        if not customer_email or "@" not in customer_email:
+            return {"ok": False, "error": "Missing or invalid customer_email."}
+
+        found = _latest_confirmed_reservation(session, customer_email)
+        if not found:
+            return {"ok": False, "error": f"No active reservation for {customer_email}."}
+
+        reservation, restaurant, cust = found
+        reservation.status = "cancelled"
+        session.commit()
+        session.refresh(reservation)
+
+        email_sent = True
+        try:
+            send_email(
+                cust.email,
+                "Your GoodFoods reservation has been cancelled",
+                f"""
+                    <b>Reservation Cancelled</b><br>
+                    Restaurant: {restaurant.unit_name}<br>
+                    Date: {reservation.date}<br>
+                    Time: {reservation.time}<br><br>
+                    We hope to host you another time.
+                """,
+            )
+        except Exception as e:
+            email_sent = False
+            logger.error(f"Cancellation email failed (ignored): {e}")
+
+        return {
+            "ok": True,
+            "reservation_id": reservation.id,
+            "restaurant": restaurant.unit_name,
+            "date": reservation.date,
+            "time": reservation.time,
+            "status": reservation.status,
+            "customer_email": cust.email,
+            "email_sent": email_sent,
+        }
+    except Exception as e:
+        session.rollback()
+        logger.exception("Error cancelling reservation")
+        return {"ok": False, "error": str(e)}
+    finally:
+        session.close()
+
+
+def modify_reservation(
+    customer_email: str = None,
+    new_date: str = None,
+    new_time: str = None,
+    new_party_size: int = None,
+    new_seating_pref: str = None,
+    **kwargs,
+):
+    """
+    Modify the customer's most recent confirmed reservation.
+
+    Only supplied fields change. Whenever date/time/party_size change, the new
+    slot is re-validated via get_available_slots. Returns {ok: False, ...} for:
+    no active reservation, invalid new party_size, or an unavailable requested
+    slot (with `available_slots` alternatives).
+    """
+    session = SessionLocal()
+    try:
+        if not customer_email or "@" not in customer_email:
+            return {"ok": False, "error": "Missing or invalid customer_email."}
+
+        # Accept both new_* and bare field names from the planner.
+        new_date = new_date or kwargs.get("date")
+        new_time = new_time or kwargs.get("time")
+        if new_party_size is None:
+            new_party_size = kwargs.get("party_size")
+        new_seating_pref = new_seating_pref or kwargs.get("seating_pref")
+
+        found = _latest_confirmed_reservation(session, customer_email)
+        if not found:
+            return {"ok": False, "error": f"No active reservation for {customer_email}."}
+
+        reservation, restaurant, cust = found
+
+        # Validate new party size if provided.
+        if new_party_size is not None:
+            try:
+                new_party_size = int(new_party_size)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "Invalid new party_size."}
+            if new_party_size < 1:
+                return {"ok": False, "error": "Invalid new party_size."}
+
+        # Effective values after applying requested changes.
+        eff_date = _normalize_date(new_date) if new_date else reservation.date
+        eff_time = new_time or reservation.time
+        eff_party = new_party_size if new_party_size is not None else reservation.party_size
+
+        # Re-validate the slot whenever anything affecting availability changes.
+        if new_date or new_time or new_party_size is not None:
+            slots_data = get_available_slots(restaurant.location_id, eff_date, eff_party)
+            if not slots_data or "error" in slots_data:
+                return {"ok": False, "error": slots_data.get("error", "No available slots for the requested change.")}
+            available = [s["time"] for s in slots_data.get("available_slots", [])]
+            if eff_time not in available:
+                return {
+                    "ok": False,
+                    "error": f"{eff_time} is not available on {eff_date}.",
+                    "available_slots": available,
+                }
+
+        # Apply changes (only supplied fields).
+        reservation.date = eff_date
+        reservation.time = eff_time
+        reservation.party_size = eff_party
+        if new_seating_pref:
+            reservation.seating_preference = new_seating_pref
+        session.commit()
+        session.refresh(reservation)
+
+        email_sent = True
+        try:
+            send_email(
+                cust.email,
+                "Your GoodFoods reservation has been updated",
+                f"""
+                    <b>Reservation Updated</b><br>
+                    Restaurant: {restaurant.unit_name}<br>
+                    Date: {reservation.date}<br>
+                    Time: {reservation.time}<br>
+                    Guests: {reservation.party_size}<br><br>
+                    See you soon!
+                """,
+            )
+        except Exception as e:
+            email_sent = False
+            logger.error(f"Modification email failed (ignored): {e}")
+
+        return {
+            "ok": True,
+            "reservation_id": reservation.id,
+            "restaurant": restaurant.unit_name,
+            "date": reservation.date,
+            "time": reservation.time,
+            "party_size": reservation.party_size,
+            "seating_pref": reservation.seating_preference,
+            "status": reservation.status,
+            "customer_email": cust.email,
+            "email_sent": email_sent,
+        }
+    except Exception as e:
+        session.rollback()
+        logger.exception("Error modifying reservation")
+        return {"ok": False, "error": str(e)}
+    finally:
+        session.close()
+
+
 def get_seating_labels(restaurant: Optional[str] = None, location_id: Optional[int] = None):
     """Return only seating section labels for a restaurant."""
     session = SessionLocal()
@@ -433,9 +624,7 @@ def get_seating_labels(restaurant: Optional[str] = None, location_id: Optional[i
     finally:
         session.close()
 
-# -----------------------------------------------------
 # TOOL FUNCTIONS map and dispatcher
-# -----------------------------------------------------
 TOOL_FUNCTIONS = {
     "search_restaurants_by_filters": search_restaurants,
     "recommend_venues": recommend_venues,
@@ -445,6 +634,8 @@ TOOL_FUNCTIONS = {
     "get_amenities": get_amenities,
     "get_booking_details": get_booking_details,
     "get_seating_labels": get_seating_labels,
+    "cancel_reservation": cancel_reservation,
+    "modify_reservation": modify_reservation,
 }
 
 def dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:

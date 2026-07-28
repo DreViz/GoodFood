@@ -8,7 +8,8 @@ from app.api.utils.slot_manager import get_available_slots
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/restaurants", tags=["Restaurants"])
+# NOTE: no prefix here — main.py mounts this router with prefix="/restaurants".
+router = APIRouter(tags=["Restaurants"])
 
 @router.get("/", summary="Get all restaurants")
 def get_restaurants(limit: int = 10):
@@ -48,7 +49,7 @@ def restaurant_analytics(restaurant_id: int):
         .all()
     )
     session.close()
-    logger.info(f"✅ [API] Analytics calculated for restaurant_id={restaurant_id}")
+    logger.info(f"[API] Analytics calculated for restaurant_id={restaurant_id}")
     return {
         "restaurant_id": restaurant_id,
         "total_reservations": total_reservations,

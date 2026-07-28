@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: goodfoods-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: goodfoods
+    ports:
+      - "5432:5432"
+    volumes:
+      - goodfoods-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d goodfoods"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: goodfoods-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - goodfoods-ollama:/root/.ollama
+
+volumes:
+  goodfoods-pgdata:
+  goodfoods-ollama:

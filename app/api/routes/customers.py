@@ -5,10 +5,9 @@ from app.data.db_connection import SessionLocal
 from app.data.db_models import Customer
 from sqlalchemy.exc import SQLAlchemyError
 
-# ✅ Important: prefix and tag only here
 router = APIRouter()
 
-# ---- Pydantic schema for validation ----
+
 class CustomerProfile(BaseModel):
     name: str
     email: str
@@ -18,7 +17,7 @@ class CustomerProfile(BaseModel):
     seating_preference: str | None = None
 
 
-# ---- POST: Save or update customer profile ----
+# POST: Save or update customer profile
 @router.post("/profile", summary="Save or update customer profile")
 def save_customer_profile(data: CustomerProfile):
     session = SessionLocal()
@@ -46,7 +45,7 @@ def save_customer_profile(data: CustomerProfile):
         session.refresh(customer)
 
         return {
-            "message": "✅ Profile saved successfully!",
+            "message": "Profile saved successfully!",
             "data": {
                 "id": customer.id,
                 "name": customer.name,
@@ -65,7 +64,7 @@ def save_customer_profile(data: CustomerProfile):
         session.close()
 
 
-# ---- GET: Retrieve customer profile by email ----
+# GET: Retrieve customer profile by email
 @router.get("/{email}", summary="Get customer profile by email")
 def get_customer_by_email(email: str):
     session = SessionLocal()

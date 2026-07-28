@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GoodFoods AI Reservation Agent — a natural-language restaurant booking system powered by a two-agent LLM architecture (Planner + Responder) backed by a local Ollama model (Llama 3.2 3B). Users chat via a Streamlit UI; the backend is a FastAPI server with a PostgreSQL database (via SQLAlchemy).
+GoodFoods AI Reservation Agent — a natural-language restaurant booking system powered by a two-agent LLM architecture (Planner + Responder) backed by a local Ollama model (`qwen3:4b` by default; `qwen3:8b` for eval). Users chat via a Streamlit UI; the backend is a FastAPI server with a PostgreSQL database (via SQLAlchemy).
 
 ## Commands
 
@@ -20,16 +20,31 @@ python -m scripts.add_opening_hours
 # Start the backend API (port 8000)
 uvicorn app.api.main:app --reload --port 8000
 
-# Start the Streamlit frontend (port 8501)
+# Start the Next.js frontend (port 3000) — primary UI, requires Node 20+
+cd frontend && npm install && npm run dev
+
+# Start the legacy Streamlit frontend (port 8501) — fallback only
 streamlit run app/main.py
 
 # Run tests
 pytest
 
+# Phase 1 smoke test (end-to-end search -> availability -> booking on the local model)
+python -m scripts.smoke_test --model qwen3:4b
+
 # Seed scripts (optional, for sample data)
 python -m scripts.generate_customers
 python -m scripts.generate_reservations
 python -m scripts.load_customer_preferences
+```
+
+### Local services (Docker)
+
+Postgres and Ollama run as containers via `docker-compose.yml`:
+
+```bash
+docker compose up -d          # start postgres (:5432) + ollama (:11434)
+docker exec goodfoods-ollama ollama pull qwen3:4b   # first-time model pull
 ```
 
 ## Architecture
@@ -64,15 +79,15 @@ Each phase has its own prompt file in `app/agent/` (`planner_prompt_phase1/2/3.t
 - **Field cleaners** (`safe_extract_party_size`, `safe_extract_date`, `safe_extract_time`, `strip_memory_if_unsupported`) filter hallucinated or invalid values (e.g. `party_size=0`) before they reach memory.
 - **Hardcoded interceptors** in `call_planner_llm` (after `validate_planner_json`) override specific planner decisions: early email capture in booking phase, blocking `create_reservation` when required fields are missing from memory, and intercepting `get_booking_details` to ask for confirmation instead. These guards live in Python, not in the prompt — editing the prompt alone will not change them.
 
-Note: there are two `ConversationMemory` instances at runtime — the module-level `memory` in `planner_agent.py` (used by the actual agent flow) and a separate `conversation_memory` in `main.py` (used by `/agent/memory/update`). The frontend only calls `/agent/memory/reset`, which resets the planner-side instance. Memory changes should target the planner-side `memory`.
+Note: memory is a single module-level `memory` instance in `planner_agent.py` (used by the agent flow). The frontend calls `POST /agent/memory/reset` to reset it. (The old duplicate `conversation_memory` instance and dead `/agent/memory/update` endpoint in `main.py` were removed in Phase 2 — B6.)
 
 ### Tool System
 
 - **`app/agent/tool_calls.py`** — Defines `TOOL_SPEC` (metadata) and `TOOL_FUNCTIONS` (implementations). All tools query PostgreSQL via SQLAlchemy `SessionLocal`. The `dispatch_tool(name, args)` function normalizes args, resolves restaurant names to `location_id` via fuzzy matching, and dispatches to the implementation. There is no separate registry class — `agent.py` calls `dispatch_tool` directly.
 
-The planner's `allowed_actions` whitelist in `planner_agent.py` is the source of truth for what the planner *may* emit; `TOOL_SPEC` in `tool_calls.py` is the source of truth for what is *actually implemented*. `modify_reservation` is currently whitelisted but not implemented (no entry in `TOOL_SPEC`).
+The planner's `allowed_actions` whitelist in `planner_agent.py` is the source of truth for what the planner *may* emit; `TOOL_SPEC` in `tool_calls.py` is the source of truth for what is *actually implemented*. As of Phase 2 both `cancel_reservation` and `modify_reservation` are implemented and whitelisted (B5).
 
-Available tools (in `TOOL_SPEC`): `search_restaurants_by_filters`, `recommend_venues`, `check_availability`, `create_reservation`, `get_seating_map`, `get_amenities`, `get_booking_details`, `get_seating_labels`.
+Available tools (in `TOOL_SPEC`): `search_restaurants_by_filters`, `recommend_venues`, `check_availability`, `create_reservation`, `get_seating_map`, `get_amenities`, `get_booking_details`, `get_seating_labels`, `cancel_reservation`, `modify_reservation`. Cancel/modify operate on the customer's most recent `status="confirmed"` reservation (resolved by `customer_email`); cancel is a soft-delete (`status="cancelled"`).
 
 ### API Layer
 
@@ -80,15 +95,18 @@ Available tools (in `TOOL_SPEC`): `search_restaurants_by_filters`, `recommend_ve
 
 | Prefix | File | Purpose |
 |---|---|---|
-| `/agent` | `routes/agent.py` | SSE streaming chat endpoint (`/agent/chat/stream`) |
+| `/agent` | `routes/agent.py` | `POST /agent/chat` (non-streaming, `ChatResponse`) + `POST /agent/chat/stream` (Vercel AI SDK data-stream — see `docs/sse_protocol.md`) |
 | `/restaurants` | `routes/restaurants.py` | Restaurant listings, slots, analytics |
 | `/reservations` | `routes/reservations.py` | CRUD reservations with async email |
 | `/customers` | `routes/customers.py` | Customer profile save/lookup |
 | `/availability` | `routes/availability.py` | Availability check endpoint |
 | `/notifications` | `routes/notifications.py` | Email sending |
 | `/analytics` | `routes/analytics.py` | Platform-wide analytics |
+| _(root)_ | `routes/shortcuts.py` | `POST /search`, `POST /book` — direct tool shortcuts (used by the eval harness) |
 
-Two agent-memory endpoints are attached directly to the app in `main.py` (not via a router): `POST /agent/memory/reset` (called by the Streamlit frontend on page refresh) and `POST /agent/memory/update`.
+Routers declare **no `prefix=`** themselves — `main.py` supplies it at mount time (Phase 2 B2 fix; declaring both caused `/reservations/reservations/`). Request/response bodies are validated by Pydantic schemas in `app/api/schemas.py` (`ChatRequest`, `ChatResponse`, `SearchRequest`, `AvailabilityRequest`, `BookingRequest`). CORS is configured from `settings.api_cors_origins`.
+
+`POST /agent/memory/reset` is attached directly to the app in `main.py` (not via a router), called by the frontend on page refresh.
 
 `routes/preferences.py` exists on disk but is **not mounted** in `main.py`.
 
@@ -101,14 +119,34 @@ Two agent-memory endpoints are attached directly to the app in `main.py` (not vi
 
 ### Frontend
 
-`app/main.py` — Streamlit app. Communicates with the FastAPI backend via SSE (`/agent/chat/stream`). Sidebar collects user preferences and saves via `/customers/profile`. Resets conversation memory on page refresh via `/agent/memory/reset`.
+**Primary UI — `frontend/`** (Phase 5): Next.js 14 (App Router) + Tailwind + shadcn/ui + Vercel AI SDK. `components/chat-panel.tsx` uses `useChat` against `POST /agent/chat/stream` (AI SDK data-stream protocol); `components/tool-trace.tsx` renders the planner/tool trace from the message annotation; `components/preferences-sidebar.tsx` saves via `POST /customers/profile`. Config via `frontend/.env.local` (`NEXT_PUBLIC_API_URL`). Requires Node 20+. See `frontend/README.md`.
+
+**Legacy fallback — `app/main.py`** (Streamlit): still runnable; since Phase 2 it calls the non-streaming `POST /agent/chat`. Slated for removal once the Next.js UI is verified live (Phase 5 task 11, deferred).
 
 ## Key Configuration
 
-- **LLM**: Ollama at `http://127.0.0.1:11434`, model `llama3.2:3b`
-- **Email**: SMTP via Gmail (`GOODFOODS_EMAIL`, `GOODFOODS_EMAIL_PASSWORD` env vars)
-- **Database**: `DATABASE_URL` env var (PostgreSQL required for JSONB columns)
-- **Planner fallback**: `app/agent/mock_llm.py` returns a generic greeting when Ollama is unreachable
+All runtime configuration lives in **`app/config.py`** (Pydantic `BaseSettings`,
+accessed via `get_settings()`) — the single source of truth. Values are read
+from environment variables / a `.env` file at the project root, and every field
+has a safe local-dev default. See `.env.example` for the full list. **Do not
+hardcode config in agent code.**
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server base URL (endpoint paths derived in code) |
+| `OLLAMA_MODEL` | `qwen3:4b` | Model tag (`qwen3:4b` dev, `qwen3:8b` eval) |
+| `OLLAMA_THINK` | `false` | qwen3 reasoning toggle (off = faster/cleaner on CPU) |
+| `OLLAMA_TIMEOUT` | `180` | Per-request timeout, seconds (qwen3:4b ≈ 6 tok/s CPU) |
+| `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/goodfoods` | PostgreSQL (JSONB columns required) |
+| `GOODFOODS_EMAIL` / `GOODFOODS_EMAIL_PASSWORD` | empty | SMTP via Gmail (blank = email no-ops) |
+| `API_CORS_ORIGINS` | `http://localhost:3000,http://localhost:8501` | Allowed CORS origins (used from Phase 2) |
+
+- **qwen3 reasoning**: `qwen3` emits a `</think>`-terminated preamble even with
+  `think` disabled; `strip_model_reasoning()` (`app/agent/llm_utils.py`) removes
+  it before the planner parses JSON and the responder returns prose.
+- **Planner fallback**: `app/agent/mock_llm.py` returns a generic greeting when
+  Ollama is unreachable.
+- **Model specs / quantization floor**: see `docs/model_specs.md`.
 
 ## Data Files
 

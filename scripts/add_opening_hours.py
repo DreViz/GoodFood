@@ -17,7 +17,7 @@ def add_opening_hours():
     restaurants = session.query(Restaurant).all()
 
     if not restaurants:
-        print("❌ No restaurants found. Did you run load_restaurants.py first?")
+        print("No restaurants found. Did you run load_restaurants.py first?")
         return
 
     for r in restaurants:
@@ -25,7 +25,7 @@ def add_opening_hours():
 
     session.commit()
     session.close()
-    print(f"✅ Added opening_hours to {len(restaurants)} restaurants successfully!")
+    print(f"Added opening_hours to {len(restaurants)} restaurants successfully!")
 
 if __name__ == "__main__":
     add_opening_hours()

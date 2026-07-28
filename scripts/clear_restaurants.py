@@ -11,10 +11,10 @@ def clear_restaurants():
     try:
         count = session.query(Restaurant).delete()
         session.commit()
-        print(f"✅ Deleted {count} restaurants from the database!")
+        print(f"Deleted {count} restaurants from the database!")
     except Exception as e:
         session.rollback()
-        print(f"❌ Error while deleting restaurants: {e}")
+        print(f"Error while deleting restaurants: {e}")
     finally:
         session.close()
 

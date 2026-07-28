@@ -20,7 +20,7 @@ def get_available_slots(location_id: int, date: str, party_size: int):
         restaurant = session.query(Restaurant).filter_by(location_id=location_id).first()
 
         if not restaurant:
-            msg = f"❌ Restaurant not found for location_id={location_id}"
+            msg = f"Restaurant not found for location_id={location_id}"
             logger.warning(msg)
             return {"error": msg}
 
@@ -50,7 +50,7 @@ def get_available_slots(location_id: int, date: str, party_size: int):
                 })
 
         logger.info(
-            f"✅ Available slots for '{restaurant.unit_name}' (loc_id={location_id}) on {date}: "
+            f"Available slots for '{restaurant.unit_name}' (loc_id={location_id}) on {date}: "
             f"{[s['time'] for s in available_slots]}"
         )
 

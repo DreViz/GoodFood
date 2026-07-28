@@ -29,9 +29,7 @@ class ConversationMemory:
             "seating_pref": None,
         }
 
-    # --------------------------------------------------------------
     # ONLY PLANNER MAY UPDATE MEMORY (NO AI GUESSING)
-    # --------------------------------------------------------------
     def update_from_planner(self, data: Dict[str, Any] = None, **kwargs):
         """
         Unified update interface.
@@ -56,7 +54,6 @@ class ConversationMemory:
 
         logger.info(f"[MEMORY] Updated: {self.state}")
 
-    # --------------------------------------------------------------
     def merge_into_context(self, planner_context: dict) -> dict:
         """
         Add memory into planner context so prompts can use it.
@@ -65,14 +62,12 @@ class ConversationMemory:
         merged["memory"] = {k: v for k, v in self.state.items() if v is not None}
         return merged
 
-    # --------------------------------------------------------------
     def dump(self):
         """
         For debugging — returns non-None memory keys.
         """
         return {k: v for k, v in self.state.items() if v is not None}
 
-    # --------------------------------------------------------------
     def reset(self):
         """
         Reset entire conversation but return phase to 'discovery'.

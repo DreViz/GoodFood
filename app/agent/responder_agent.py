@@ -4,12 +4,14 @@ import logging
 import requests
 import os
 
+from app.agent.llm_utils import strip_model_reasoning
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
 
-# ---------------- Configuration ----------------
-OLLAMA_ENDPOINT = "http://127.0.0.1:11434/api/generate"
-MODEL = "llama3.2:3b"   # keep consistent with your planner model
-TIMEOUT = 60
+# Configuration
+# Model, endpoint, timeout and think-mode all come from app.config
+# (single source of truth — see Settings / get_settings()).
 
 # Load responder system prompt
 RESPONDER_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "responder_prompt.txt")
@@ -17,7 +19,7 @@ with open(RESPONDER_PROMPT_PATH, "r", encoding="utf-8") as f:
     RESPONDER_PROMPT = f.read()
 
 
-# ---------------- Helper Functions ----------------
+# Helper Functions
 
 def normalize_reservation_error(error_text: str) -> str:
     """
@@ -87,7 +89,7 @@ def format_reservation_message(result: dict) -> str:
 
 
 
-# ---------------- Main Responder Function ----------------
+# Main Responder Function
 def call_responder_llm(user_text: str, tool_output: dict) -> str:
     """
     Converts structured tool_output into a natural, conversational reply.
@@ -110,18 +112,24 @@ def call_responder_llm(user_text: str, tool_output: dict) -> str:
 
 
     try:
+        settings = get_settings()
         r = requests.post(
-            OLLAMA_ENDPOINT,
-            json={"model": MODEL, "prompt": prompt, "stream": False},
-            timeout=TIMEOUT,
+            settings.ollama_generate_url,
+            json={
+                "model": settings.ollama_model,
+                "prompt": prompt,
+                "stream": False,
+                "think": settings.ollama_think,
+            },
+            timeout=settings.ollama_timeout,
         )
         r.raise_for_status()
 
         data = r.json()
         raw_reply = str(data.get("response") or data.get("text") or "").strip()
 
-        # 🔥 NO CLEANING AT ALL
-        cleaned = raw_reply
+        # Strip any qwen3 reasoning preamble before returning prose.
+        cleaned = strip_model_reasoning(raw_reply)
 
         # Only minimal safety fallback
         if not cleaned or len(cleaned) < 2:

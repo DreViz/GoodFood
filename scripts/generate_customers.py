@@ -28,7 +28,7 @@ def populate_customers(n=10):
     customers = [generate_random_customer() for _ in range(n)]
     session.add_all(customers)
     session.commit()
-    print(f"✅ Successfully inserted {n} random customers.")
+    print(f"Successfully inserted {n} random customers.")
     session.close()
 
 if __name__ == "__main__":

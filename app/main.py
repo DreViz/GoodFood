@@ -1,14 +1,13 @@
 import streamlit as st
 import json
 import requests
-import sseclient
 import sys, os
 from datetime import date, timedelta
 
-# ---------- PATH SETUP ----------
+# PATH SETUP
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-# ---------- CONFIG ----------
+# CONFIG
 st.set_page_config(
     page_title="GoodFoods Assistant",
     page_icon="🥗",
@@ -16,19 +15,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-API_URL = "http://127.0.0.1:8000/agent/chat/stream"   # streaming endpoint
+API_URL = "http://127.0.0.1:8000/agent/chat"   # non-streaming endpoint (legacy Streamlit client)
 RESET_MEMORY_URL = "http://127.0.0.1:8000/agent/memory/reset"  # new endpoint to clear context
 
-# ---------- RESET MEMORY ON REFRESH ----------
+# RESET MEMORY ON REFRESH
 if "memory_reset" not in st.session_state:
     try:
         requests.post(RESET_MEMORY_URL, timeout=5)
         st.session_state.memory_reset = True
-        print(" Conversation memory reset (page refresh).")
+        print("Conversation memory reset (page refresh).")
     except Exception as e:
-        print(f" Could not reset memory: {e}")
+        print(f"Could not reset memory: {e}")
 
-# ---------- GLOBAL JS ----------
+# GLOBAL JS
 st.markdown("""
 <script>
 setTimeout(() => {
@@ -41,7 +40,7 @@ setTimeout(() => {
 
 
 
-# ---------- GLOBAL CSS ----------
+# GLOBAL CSS
 st.markdown(
     """
     <style>
@@ -121,7 +120,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-if st.button("🔄 Reset Conversation"):
+if st.button("Reset Conversation"):
     try:
         res = requests.post("http://127.0.0.1:8000/agent/memory/reset", timeout=4)
         if res.status_code == 200:
@@ -132,12 +131,12 @@ if st.button("🔄 Reset Conversation"):
             st.warning("Failed to reset memory.")
     except Exception as e:
         st.warning(f"Error resetting: {e}")
-# ---------- SIDEBAR ----------
+# SIDEBAR
 with st.sidebar:
     st.markdown(
         """
         <div style="margin-top:6px; margin-bottom:8px;">
-            <h3 style="margin:0;color:#222;">🥗 GoodFoods</h3>
+            <h3 style="margin:0;color:#222;">GoodFoods</h3>
             <p style="margin:4px 0 0 0;color:#555;font-size:0.92rem;">
             Your personal dining concierge — save preferences for smarter suggestions.</p>
         </div>
@@ -179,7 +178,7 @@ with st.sidebar:
     seating_pref = st.selectbox("Seating Preference", ["Any", "outdoor", "indoor", "window-side"], key="pref_seating")
 
     st.markdown("<br>", unsafe_allow_html=True)
-    if st.button(" Save My Preferences"):
+    if st.button("Save My Preferences"):
         if not name or not email:
             st.error("Please enter both name and email before saving preferences.")
         else:
@@ -197,22 +196,22 @@ with st.sidebar:
             try:
                 res = requests.post("http://127.0.0.1:8000/customers/profile", json=payload, timeout=8)
                 if res.status_code == 200:
-                    st.success(" Preferences saved successfully!")
+                    st.success("Preferences saved successfully!")
                 else:
-                    st.error(f" Couldn’t save preferences: {res.status_code} {res.text}")
+                    st.error(f"Couldn’t save preferences: {res.status_code} {res.text}")
             except Exception as e:
                 st.error(f"Error saving preferences: {e}")
 
-    st.caption("💡 Tip: Try ‘Find an outdoor table for 4 in Indiranagar under ₹800’")
+    st.caption("Tip: Try ‘Find an outdoor table for 4 in Indiranagar under ₹800’")
 
-# ---------- HEADER CARD ----------
+# HEADER CARD
 st.markdown(
     """
     <div class="glass-card">
       <div style="display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap;">
         <div style="flex:1;min-width:280px;">
           <div class="gf-title">GoodFoods Reservation Assistant</div>
-          <div class="gf-subtle">Discover, chat, and instantly reserve the perfect dining spot — powered by AI 🍽️</div>
+          <div class="gf-subtle">Discover, chat, and instantly reserve the perfect dining spot — powered by AI</div>
         </div>
       </div>
     </div>
@@ -220,7 +219,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------- CHAT STATE ----------
+# CHAT STATE
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -236,7 +235,7 @@ def build_context_from_history(messages, limit=10):
         role = "User" if msg["role"] == "user" else "Assistant"
         formatted.append(f"{role}: {msg['content']}")
     return "\n".join(formatted).strip()
-# ---------- CHAT INPUT + STREAMING ----------
+# CHAT INPUT + STREAMING
 user_text = st.chat_input("Ask, book, or explore restaurants…")
 
 if user_text:
@@ -249,62 +248,32 @@ if user_text:
     placeholder = st.empty()
     full_response = ""
 
-    # IMPORTANT:
-    # LLM planner + backend tool handler will now manage memory correctly.
-
     with st.chat_message("assistant"):
         st.markdown('<div class="chat-bubble-assistant">', unsafe_allow_html=True)
         try:
-            payload = {"query": user_text, "context": history_text}
+            # The streaming endpoint speaks the AI SDK data-stream protocol for
+            # the Next.js UI; this legacy client uses the non-streaming endpoint.
+            payload = {"message": user_text, "context": history_text}
 
-            with requests.post(API_URL, json=payload, stream=True, timeout=60) as resp:
-                client = sseclient.SSEClient(resp)
+            resp = requests.post(API_URL, json=payload, timeout=180)
+            resp.raise_for_status()
+            data = resp.json()
 
-                for event in client.events():
-                    if not event.data:
-                        continue
-                    if event.data == "[DONE]":
-                        break
+            full_response = data.get("reply", "")
+            tool_output = data.get("tool_output")
 
-                    try:
-                        data = json.loads(event.data)
-
-                        # LLM token stream
-                        if "message" in data:
-                            full_response += data["message"]
-                            placeholder.markdown(
-                                f'<div class="chat-bubble-assistant">{full_response}▌</div>',
-                                unsafe_allow_html=True,
-                            )
-
-                        # Tool output (availability list, booking details, etc.)
-                        elif "tool_output" in data:
-                            placeholder.markdown(
-                                f'<div class="chat-bubble-assistant">'
-                                f'{full_response}<br>'
-                                f'<pre style="background:#0f1112;color:#dcdcdc;padding:10px;border-radius:8px;">'
-                                f'{json.dumps(data["tool_output"], indent=2)}'
-                                f'</pre></div>',
-                                unsafe_allow_html=True,
-                            )
-
-                    except Exception:
-                        # raw stream fallback
-                        full_response += event.data
-                        placeholder.markdown(
-                            f'<div class="chat-bubble-assistant">{full_response}▌</div>',
-                            unsafe_allow_html=True,
-                        )
-
-            # final rendering (remove cursor)
-            placeholder.markdown(
-                f'<div class="chat-bubble-assistant">{full_response}</div>',
-                unsafe_allow_html=True,
-            )
+            html = f'<div class="chat-bubble-assistant">{full_response}'
+            if tool_output:
+                html += (
+                    f'<br><pre style="background:#0f1112;color:#dcdcdc;padding:10px;border-radius:8px;">'
+                    f'{json.dumps(tool_output, indent=2)}</pre>'
+                )
+            html += "</div>"
+            placeholder.markdown(html, unsafe_allow_html=True)
 
         except Exception as e:
             placeholder.markdown(
-                f'<div class="chat-bubble-assistant">Sorry — streaming failed: {e}</div>',
+                f'<div class="chat-bubble-assistant">Sorry — request failed: {e}</div>',
                 unsafe_allow_html=True,
             )
 

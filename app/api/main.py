@@ -1,5 +1,6 @@
 # app/api/main.py
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from app.agent.planner_agent import memory
 import logging
@@ -17,12 +18,13 @@ from app.api.routes import (
     analytics,
     agent,
     availability,
+    shortcuts,
 )
-from app.agent.conversation_memory import ConversationMemory
-from app.data.db_connection import engine, Base
+from app.config import get_settings
 
 load_dotenv()
 
+settings = get_settings()
 
 app = FastAPI(
     title="GoodFoods Reservation API",
@@ -30,8 +32,14 @@ app = FastAPI(
     description="AI-powered restaurant reservation and dining management system",
 )
 
-
-conversation_memory = ConversationMemory()
+# CORS — allow the Next.js frontend (localhost:3000) and legacy Streamlit (8501).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 app.include_router(restaurants.router, prefix="/restaurants", tags=["Restaurants"])
@@ -41,6 +49,7 @@ app.include_router(notifications.router, prefix="/notifications", tags=["Notific
 app.include_router(analytics.router, prefix="/analytics", tags=["Analytics"])
 app.include_router(agent.router, prefix="/agent", tags=["Agent"])
 app.include_router(availability.router, prefix="/availability", tags=["Availability"])
+app.include_router(shortcuts.router, tags=["Shortcuts"])
 
 
 
@@ -49,30 +58,11 @@ app.include_router(availability.router, prefix="/availability", tags=["Availabil
 def reset_conversation_memory():
     """
     Reset the in-memory conversation context.
-    Called once by the Streamlit frontend when the page is refreshed.
+    Called once by the frontend when the page is refreshed.
     """
     try:
         memory.reset()
         return {"ok": True, "message": " Conversation memory cleared successfully."}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-#update memory endpoint (called before each chat message)
-@app.post("/agent/memory/update", tags=["Agent Memory"])
-async def update_conversation_memory(request: Request):
-    """
-    Update the persistent conversation memory with the latest user message.
-    This allows the planner to retain context (like cuisine, date, etc.) across turns.
-    """
-    try:
-        body = await request.json()
-        text = body.get("text", "")
-        if not text:
-            return {"ok": False, "error": "Missing 'text' in request body."}
-
-        conversation_memory.update_from_user(text)
-        return {"ok": True, "memory": conversation_memory.state}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

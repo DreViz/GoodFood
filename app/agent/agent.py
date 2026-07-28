@@ -10,15 +10,11 @@ from app.agent.tool_calls import dispatch_tool
 logger = logging.getLogger(__name__)
 
 
-# -----------------------------------------
 # PER-USER CONTEXT (recent search results)
-# -----------------------------------------
 recent_results: list = []
 
 
-# -----------------------------------------
 # PARSE PLANNER OUTPUT
-# -----------------------------------------
 def parse_planner_output(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -30,9 +26,7 @@ def parse_planner_output(raw: Any) -> Dict[str, Any]:
     raise ValueError("Planner output not valid JSON")
 
 
-# -----------------------------------------
 # MAIN PROCESSOR
-# -----------------------------------------
 def process_user_query(
     user_text: str,
     user_id: Optional[str] = None,

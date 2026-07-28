@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  GoodFoods theme — warm dark palette.
+  Brand: green #4b6043 ≈ hsl(103 18% 32%), tan #D4A373 ≈ hsl(30 53% 64%).
+  Values are HSL triplets consumed as hsl(var(--x)) in tailwind.config.ts.
+*/
+@layer base {
+  :root {
+    --background: 40 30% 98%;
+    --foreground: 150 10% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 150 10% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 150 10% 12%;
+    --primary: 103 22% 30%;
+    --primary-foreground: 40 30% 98%;
+    --secondary: 40 20% 94%;
+    --secondary-foreground: 150 10% 18%;
+    --muted: 40 16% 93%;
+    --muted-foreground: 150 6% 42%;
+    --accent: 30 53% 64%;
+    --accent-foreground: 150 20% 12%;
+    --destructive: 0 72% 46%;
+    --destructive-foreground: 40 30% 98%;
+    --border: 150 8% 86%;
+    --input: 150 8% 88%;
+    --ring: 30 53% 55%;
+    --chart-1: 30 53% 64%;
+    --chart-2: 103 22% 40%;
+    --chart-3: 200 30% 50%;
+    --chart-4: 45 60% 55%;
+    --chart-5: 350 40% 55%;
+    --radius: 0.75rem;
+    --sidebar: 40 24% 96%;
+    --sidebar-foreground: 150 10% 12%;
+    --sidebar-primary: 103 22% 30%;
+    --sidebar-primary-foreground: 40 30% 98%;
+    --sidebar-accent: 40 20% 92%;
+    --sidebar-accent-foreground: 150 10% 18%;
+    --sidebar-border: 150 8% 86%;
+    --sidebar-ring: 30 53% 55%;
+  }
+
+  .dark {
+    --background: 140 10% 7%;
+    --foreground: 40 20% 92%;
+    --card: 145 9% 11%;
+    --card-foreground: 40 20% 92%;
+    --popover: 145 9% 11%;
+    --popover-foreground: 40 20% 92%;
+    --primary: 30 53% 64%;
+    --primary-foreground: 150 25% 10%;
+    --secondary: 150 8% 16%;
+    --secondary-foreground: 40 20% 92%;
+    --muted: 150 7% 15%;
+    --muted-foreground: 40 10% 62%;
+    --accent: 103 18% 32%;
+    --accent-foreground: 40 22% 92%;
+    --destructive: 0 62% 47%;
+    --destructive-foreground: 40 22% 94%;
+    --border: 150 8% 20%;
+    --input: 150 8% 18%;
+    --ring: 30 53% 64%;
+    --chart-1: 30 53% 64%;
+    --chart-2: 103 24% 45%;
+    --chart-3: 200 30% 55%;
+    --chart-4: 45 60% 60%;
+    --chart-5: 350 40% 60%;
+    --sidebar: 145 9% 10%;
+    --sidebar-foreground: 40 20% 92%;
+    --sidebar-primary: 30 53% 64%;
+    --sidebar-primary-foreground: 150 25% 10%;
+    --sidebar-accent: 150 8% 16%;
+    --sidebar-accent-foreground: 40 20% 92%;
+    --sidebar-border: 150 8% 20%;
+    --sidebar-ring: 30 53% 64%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

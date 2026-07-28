@@ -5,7 +5,7 @@ from app.data.db_connection import SessionLocal, engine
 from app.data.db_models import Base, Customer, CustomerPreferences
 
 # --- STEP 1: Ensure table exists ---
-print("📦 Creating missing tables if any...")
+print("Creating missing tables if any...")
 Base.metadata.create_all(bind=engine)
 
 # --- STEP 2: Open session ---
@@ -23,9 +23,9 @@ for cust_data in demo_customers:
         cust = Customer(**cust_data)
         session.add(cust)
         session.commit()
-        print(f"✅ Added demo customer: {cust.email}")
+        print(f"Added demo customer: {cust.email}")
     else:
-        print(f"⚠️ Customer already exists: {existing.email}")
+        print(f"Customer already exists: {existing.email}")
 
 # --- STEP 4: Insert customer preferences ---
 preferences_data = [
@@ -52,7 +52,7 @@ for pref_data in preferences_data:
         # Get customer ID by email
         cust = session.query(Customer).filter_by(email=pref_data["email"]).first()
         if not cust:
-            print(f"❌ Customer not found for {pref_data['email']} — skipping.")
+            print(f"Customer not found for {pref_data['email']} — skipping.")
             continue
 
         # Check if preferences already exist
@@ -62,7 +62,7 @@ for pref_data in preferences_data:
             .first()
         )
         if existing_pref:
-            print(f"⚠️ Preferences already exist for {cust.email}")
+            print(f"Preferences already exist for {cust.email}")
             continue
 
         pref = CustomerPreferences(
@@ -76,11 +76,11 @@ for pref_data in preferences_data:
 
         session.add(pref)
         session.commit()
-        print(f"✅ Added preferences for {cust.email}")
+        print(f"Added preferences for {cust.email}")
 
     except IntegrityError as e:
         session.rollback()
-        print(f"⚠️ Skipped duplicate: {pref_data['email']} - {e}")
+        print(f"Skipped duplicate: {pref_data['email']} - {e}")
 
 session.close()
-print("🎉 Customer preferences loaded successfully!")
+print("Customer preferences loaded successfully!")

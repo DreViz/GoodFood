@@ -1,18 +1,11 @@
 # app/api/routes/availability.py
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 from app.agent.tool_calls import check_availability
+from app.api.schemas import AvailabilityRequest
 
-router = APIRouter(prefix="/availability", tags=["Availability"])
-
-
-class AvailabilityRequest(BaseModel):
-    location_id: int | None = None
-    restaurant: str | None = None
-    date: str
-    time: str | None = None
-    party_size: int
+# NOTE: no prefix here — main.py mounts this router with prefix="/availability".
+router = APIRouter(tags=["Availability"])
 
 
 @router.post("/", summary="Check restaurant availability by name or location ID")

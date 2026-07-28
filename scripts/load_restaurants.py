@@ -45,19 +45,19 @@ for rest in restaurants_data:
         session.add(restaurant)
         session.commit()
         inserted += 1
-        print(f"✅ Inserted: {restaurant.unit_name}")
+        print(f"Inserted: {restaurant.unit_name}")
 
     except IntegrityError:
         session.rollback()
         skipped += 1
-        print(f"⚠️ Skipped duplicate: {rest['unit_name']}")
+        print(f"Skipped duplicate: {rest['unit_name']}")
     except Exception as e:
         session.rollback()
         failed += 1
-        print(f"❌ Failed to insert {rest['unit_name']}: {e}")
+        print(f"Failed to insert {rest['unit_name']}: {e}")
 
 session.close()
-print(f"\n🎉 Done! Inserted: {inserted}, Skipped: {skipped}, Failed: {failed}")
+print(f"\nDone! Inserted: {inserted}, Skipped: {skipped}, Failed: {failed}")
 
 
 #python -m scripts.load_restaurants

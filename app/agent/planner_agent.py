@@ -6,11 +6,12 @@ import os
 import re
 from app.agent.mock_llm import mock_planner_output
 from app.agent.conversation_memory import ConversationMemory
+from app.agent.llm_utils import strip_model_reasoning
+from app.config import get_settings
 
 
 logger = logging.getLogger(__name__)
 
-# ---------------- Load Prompts for Phase ----------------
 
 def load_prompt_for_phase(phase: str) -> str:
     base = os.path.dirname(__file__)
@@ -29,16 +30,9 @@ def load_prompt_for_phase(phase: str) -> str:
         return f.read()
 
 
-# ---------------- Ollama Config ----------------
-OLLAMA_ENDPOINT = "http://127.0.0.1:11434/api/generate"
-MODEL = "llama3.2:3b"
-TIMEOUT = 120
-
-# Global backend memory
+# Model, endpoint, timeout and think-mode all come from app.config.
 memory = ConversationMemory()
 
-
-# ---------------- JSON Repair Helpers ----------------
 
 def repair_malformed_json(candidate: str) -> str:
     if not candidate:
@@ -74,14 +68,12 @@ def validate_planner_json(candidate: str) -> dict | None:
     if plan not in ("reply", "execute"):
         return None
 
-    # reply schema
     if plan == "reply":
         reply_text = parsed.get("reply", "")
         if isinstance(reply_text, str) and 4 <= len(reply_text) <= 200:
             return parsed
         return None
 
-    # execute schema
     if plan == "execute":
         action = parsed.get("action")
         args = parsed.get("args", {}) or {}
@@ -97,7 +89,8 @@ def validate_planner_json(candidate: str) -> dict | None:
             "get_amenities",
             "get_booking_details",
             "get_seating_labels",
-            "modify_reservation", 
+            "cancel_reservation",
+            "modify_reservation",
         }
 
         if action not in allowed_actions:
@@ -108,21 +101,14 @@ def validate_planner_json(candidate: str) -> dict | None:
     return None
 
 
-# ---------------- SAFE FIELD EXTRACTION ----------------
-# Prevent hallucinations (party_size=0, date="")
-# These functions are used before memory update
-# to filter invalid or fabricated values.
+# These field cleaners run before memory updates to drop invalid or fabricated
+# values (e.g. party_size=0, date="") the LLM may emit.
 
 def safe_extract_party_size(value):
-    """
-    Prevent hallucinations:
-    - Reject None, "", 0, negative numbers
-    - Accept only explicitly mentioned integers
-    """
+    """Accept a plausible party size (1-50); reject anything else."""
     if value is None:
         return None
 
-    # if LLM hallucinated 0 → reject
     try:
         v = int(value)
         if v >= 1 and v <= 50:
@@ -147,7 +133,7 @@ def safe_extract_time(value):
 
 
 
-# ------------- Fix: Never infer missing values from memory -------------
+# Fix: Never infer missing values from memory
 def strip_memory_if_unsupported(args):
     """
     Remove invalid or fabricated values before memory.update().
@@ -180,7 +166,7 @@ def strip_memory_if_unsupported(args):
 
     return cleaned
 
-# ---------------- Main Planner Function ----------------
+# Main Planner Function
 def call_planner_llm(
     user_text: str,
     context: str = "",
@@ -219,14 +205,17 @@ def call_planner_llm(
     logger.info("===== FULL PROMPT SENT TO LLM =====\n%s", full_prompt)
 
     try:
+        settings = get_settings()
         payload = {
-            "model": MODEL,
+            "model": settings.ollama_model,
             "prompt": full_prompt,
             "stream": False,
-            "stop": ["}"],
+            # qwen3: disable reasoning for latency + clean JSON. Any residual
+            # preamble is removed by strip_model_reasoning below.
+            "think": settings.ollama_think,
         }
 
-        r = requests.post(OLLAMA_ENDPOINT, json=payload, timeout=TIMEOUT)
+        r = requests.post(settings.ollama_generate_url, json=payload, timeout=settings.ollama_timeout)
         r.raise_for_status()
         data = r.json()
 
@@ -237,6 +226,10 @@ def call_planner_llm(
             or data.get("text")
             or ""
         ).strip()
+
+        # qwen3 emits a reasoning preamble ending in </think> even with
+        # think disabled — strip it before any JSON extraction.
+        raw_response = strip_model_reasoning(raw_response)
 
         json_start = raw_response.find("{")
 
@@ -277,7 +270,7 @@ def call_planner_llm(
 
         candidate = re.sub(r"<([^>]+)>", r"\1", candidate)
 
-        # --- EARLY EMAIL CAPTURE (restricted to clear email-provision intents) ---
+        # EARLY EMAIL CAPTURE (restricted to clear email-provision intents)
         email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", user_text)
         lower_text = user_text.lower()
         # only treat as "provide email" when there's clear intent keywords
@@ -305,12 +298,12 @@ def call_planner_llm(
 
             # Otherwise ask next missing field (time is highest priority missing in booking flow)
             return {"plan": "reply", "reply": "What time should I book it for?"}
-        # --- END EARLY EMAIL CAPTURE ---
+        # END EARLY EMAIL CAPTURE
 
         validated = validate_planner_json(candidate)
         logger.info("===== VALIDATED PLANNER JSON =====\n%s", validated)
 
-        # ---------------- SAFETY CHECKS (run BEFORE any memory updates) ----------------
+        # SAFETY CHECKS (run BEFORE any memory updates)
         # Helper to detect missing/invalid values robustly
         def _is_missing(value):
             if value is None:
@@ -349,9 +342,9 @@ def call_planner_llm(
                         "restaurant": "Which restaurant should I book?"
                     }
                     return {"plan": "reply", "reply": questions.get(field, "Could you confirm the missing details?")}
-        # ---------------- END SAFETY CHECKS ----------------
+        # END SAFETY CHECKS
 
-        # ---------------- MEMORY UPDATES ONLY HERE ----------------
+        # MEMORY UPDATES ONLY HERE
         phase = memory.state.get("phase")
 
         if validated and validated.get("plan") == "execute":
@@ -393,8 +386,8 @@ def call_planner_llm(
             logger.info("===== CLEANED ARGS ===== %s", cleaned)
             logger.info("===== MEMORY BEFORE UPDATE ===== %s", memory.state)
 
-            # ---------------------- FIX APPLIED HERE ----------------------
-            # Prevent premature reservation execution in Phase 2 when user provided email + other fields
+            # Once all fields are known, capture the email and ask for
+            # confirmation instead of firing get_booking_details.
             if action == "get_booking_details" and cleaned.get("customer_email"):
                 mem = memory.state
                 has_required = all([
@@ -408,9 +401,7 @@ def call_planner_llm(
                     memory.update_from_planner({"customer_email": cleaned["customer_email"]})
                     # Ask for confirmation — do NOT call get_booking_details
                     return {"plan": "reply", "reply": "Shall I confirm your reservation now?"}
-            # ----------------------------------------------------------------
 
-            # memory update logic here...
             if action == "get_seating_labels":
                 memory.update_from_planner({
                     "restaurant": cleaned.get("restaurant"),
@@ -430,7 +421,7 @@ def call_planner_llm(
                     memory.update_from_planner({"phase": "booking"})
 
             elif action == "create_reservation":
-                # Save all booking fields provided by Phase 2 transition
+                # Persist the booking fields carried over from the availability step.
                 payload = {"phase": "booking"}
 
                 if cleaned.get("restaurant") is not None:

@@ -18,7 +18,7 @@ def generate_reservations(n=15):
     restaurants = session.query(Restaurant).all()
 
     if not customers or not restaurants:
-        print("❌ No customers or restaurants found. Please populate them first.")
+        print("No customers or restaurants found. Please populate them first.")
         session.close()
         return
 
@@ -45,7 +45,7 @@ def generate_reservations(n=15):
         session.add(reservation)
 
     session.commit()
-    print(f"✅ Successfully inserted {n} random reservations.")
+    print(f"Successfully inserted {n} random reservations.")
     session.close()
 
 if __name__ == "__main__":

@@ -8,9 +8,10 @@ from app.api.utils.email_service import send_email
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-router = APIRouter(prefix="/reservations", tags=["Reservations"])
+# NOTE: no prefix here — main.py mounts this router with prefix="/reservations".
+router = APIRouter(tags=["Reservations"])
 
-# ---------------------------- FASTAPI DB DEPENDENCY ----------------------------
+# FASTAPI DB DEPENDENCY
 def get_db():
     db = SessionLocal()
     try:
@@ -19,7 +20,7 @@ def get_db():
         db.close()
 
 
-# ---------------------------- MODELS ----------------------------
+# MODELS
 class ReservationRequest(BaseModel):
     customer_email: EmailStr
     restaurant_id: int
@@ -40,31 +41,31 @@ class ReservationResponse(BaseModel):
     status: str
 
     class Config:
-        from_attributes = True  # ✅ Pydantic v2 compatible
+        from_attributes = True
 
 
-# ---------------------------- EMAIL ----------------------------
+# EMAIL
 def send_confirmation_email(customer_email, restaurant_name, data, customer_name):
     """Helper function for background email sending"""
     subject = f"GoodFoods Reservation Confirmed — {restaurant_name}"
     body = f"""
     <html>
       <body>
-        <h2>Your reservation is confirmed ✅</h2>
+        <h2>Your reservation is confirmed</h2>
         <p><strong>Restaurant:</strong> {restaurant_name}</p>
         <p><strong>Date:</strong> {data.date}</p>
         <p><strong>Time:</strong> {data.time}</p>
         <p><strong>Party size:</strong> {data.party_size}</p>
         <p><strong>Seating preference:</strong> {data.seating_preference or 'Not specified'}</p>
         <hr>
-        <p>We look forward to serving you — GoodFoods 🍽️</p>
+        <p>We look forward to serving you — GoodFoods</p>
       </body>
     </html>
     """
     send_email(customer_email, subject, body)
 
 
-# ---------------------------- CREATE RESERVATION ----------------------------
+# CREATE RESERVATION
 @router.post("/", summary="Create a new reservation (async email confirmation)")
 def create_reservation(data: ReservationRequest, background_tasks: BackgroundTasks):
     session = SessionLocal()
@@ -79,8 +80,8 @@ def create_reservation(data: ReservationRequest, background_tasks: BackgroundTas
         if not restaurant:
             raise HTTPException(status_code=404, detail="Restaurant not found.")
 
-        # Check slot availability
-        availability = get_available_slots(restaurant.id, data.date, data.party_size)
+        # Check slot availability (slot_manager resolves by location_id, not PK)
+        availability = get_available_slots(restaurant.location_id, data.date, data.party_size)
         if "error" in availability:
             raise HTTPException(status_code=400, detail=availability["error"])
 
@@ -123,7 +124,7 @@ def create_reservation(data: ReservationRequest, background_tasks: BackgroundTas
     background_tasks.add_task(send_confirmation_email, customer_email, restaurant_name, data, customer_name)
 
     return {
-        "message": "✅ Reservation created successfully",
+        "message": "Reservation created successfully",
         "reservation_id": reservation.id,
         "restaurant": restaurant_name,
         "customer": customer_name,
@@ -133,7 +134,7 @@ def create_reservation(data: ReservationRequest, background_tasks: BackgroundTas
     }
 
 
-# ---------------------------- FETCH ALL RESERVATIONS ----------------------------
+# FETCH ALL RESERVATIONS
 @router.get("/", response_model=List[ReservationResponse], summary="Fetch all reservations")
 def get_all_reservations(db: Session = Depends(get_db)):
     try:
@@ -145,7 +146,7 @@ def get_all_reservations(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
-# ---------------------------- FETCH BY CUSTOMER EMAIL ----------------------------
+# FETCH BY CUSTOMER EMAIL
 @router.get("/{email}", response_model=List[ReservationResponse], summary="Fetch reservations by customer email")
 def get_reservations_by_email(email: str, db: Session = Depends(get_db)):
     try:

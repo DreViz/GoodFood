@@ -5,7 +5,7 @@ from fastapi import HTTPException
 import os
 
 
-# ----- Configuration -----
+# Configuration
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 SENDER_EMAIL = os.getenv("GOODFOODS_EMAIL", "your_email@gmail.com")
@@ -30,7 +30,7 @@ def send_email(recipient: str, subject: str, body: str):
             server.login(SENDER_EMAIL, SENDER_PASSWORD)
             server.send_message(msg)
 
-        return {"message": f"✅ Email sent successfully to {recipient}"}
+        return {"message": f"Email sent successfully to {recipient}"}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Email send failed: {str(e)}")

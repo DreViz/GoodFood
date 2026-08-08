@@ -18,6 +18,12 @@ class ConversationMemory:
         # full unified state (everything the planner may choose to store)
         self.state: Dict[str, Any] = {
             "phase": "discovery",
+            # `intent` distinguishes create-vs-manage booking flows. Set to
+            # "manage" by the Phase-1 cancel/modify interceptor so downstream
+            # Python guards (early-email-capture, confirmation short-circuit)
+            # can route get_booking_details / cancel_reservation instead of
+            # assuming a fresh create_reservation.
+            "intent": None,
             "cuisine": None,
             "restaurant": None,
             "location_id": None,
@@ -57,9 +63,16 @@ class ConversationMemory:
     def merge_into_context(self, planner_context: dict) -> dict:
         """
         Add memory into planner context so prompts can use it.
+
+        `intent` is a Python-internal flag consumed by the planner's pre-LLM
+        interceptors; it is intentionally hidden from the LLM so the prompt
+        does not carry an unexplained field the phase prompts never reference.
         """
         merged = planner_context.copy()
-        merged["memory"] = {k: v for k, v in self.state.items() if v is not None}
+        merged["memory"] = {
+            k: v for k, v in self.state.items()
+            if v is not None and k != "intent"
+        }
         return merged
 
     def dump(self):

@@ -46,6 +46,10 @@ class Settings(BaseSettings):
         return f"{self.ollama_base_url.rstrip('/')}/api/generate"
 
     @property
+    def ollama_chat_url(self) -> str:
+        return f"{self.ollama_base_url.rstrip('/')}/api/chat"
+
+    @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.api_cors_origins.split(",") if o.strip()]
 

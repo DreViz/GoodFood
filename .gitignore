@@ -89,3 +89,6 @@ local_settings.py
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Eval output (per-run reports — locally generated, not source-controlled)
+reports/

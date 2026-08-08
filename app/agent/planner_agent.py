@@ -204,18 +204,161 @@ def call_planner_llm(
     logger.info("\n\n===== PLANNER PHASE: %s =====", current_phase)
     logger.info("===== FULL PROMPT SENT TO LLM =====\n%s", full_prompt)
 
+    # =====================================================================
+    # PRE-LLM INTERCEPTORS
+    # Deterministic guards that fire before the LLM round-trip, covering
+    # decisions qwen3:4b + format=json + think=false makes unreliably:
+    #   1. Cancel/modify intent detection in Phase 1 (no Phase-1 prompt rule)
+    #   2. Manage-flow email capture -> get_booking_details
+    #   3. Booking confirmation short-circuit (LLM emits invalid JSON on "yes")
+    #   4. Cancel confirmation in manage flow
+    # Each returns a planner-shaped dict mirroring what the LLM would emit
+    # if it followed the prompt reliably. Skipping the round-trip here
+    # also keeps per-turn latency at ~0s for these covered cases.
+    # =====================================================================
+    _text_lower = user_text.strip().lower()
+    _phase = memory.state.get("phase")
+
+    # (1) Cancel/modify intent interceptor — Phase 1 -> Phase 3 manage.
+    # Phase-1 prompt has no rule for cancel/modify intent; without this
+    # guard the model falls through to failsafe or hallucinates a restaurant.
+    if _phase in (None, "", "discovery"):
+        _manage_patterns = [
+            r"\b(cancel|modify|change|update|view)\b.{0,30}\b(booking|reservation)\b",
+            r"\b(booking|reservation)\b.{0,30}\b(cancel|modify|change|update|view)\b",
+            r"\bmy\s+(booking|reservation)\b",
+        ]
+        if any(re.search(p, _text_lower) for p in _manage_patterns):
+            logger.info("===== CANCEL/MODIFY INTENT INTERCEPTOR (Phase 1 -> manage) =====")
+            memory.update_from_planner({"phase": "booking", "intent": "manage"})
+            return {
+                "plan": "reply",
+                "reply": "Which email is the reservation under?",
+            }
+
+    # (2) Manage-flow email capture -> emit get_booking_details directly.
+    # The cancel/modify interceptor above set intent=manage and asked for
+    # email; on the next turn a bare email is the answer. The Phase-3
+    # prompt would otherwise loop on "Which email?" because it does not
+    # see the email in memory yet.
+    if (_phase == "booking"
+            and memory.state.get("intent") == "manage"
+            and not memory.state.get("customer_email")):
+        _email_match_pre = re.search(
+            r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", user_text
+        )
+        if _email_match_pre:
+            _email = _email_match_pre.group(0)
+            memory.update_from_planner({"customer_email": _email})
+            logger.info("===== MANAGE FLOW: email captured -> get_booking_details =====")
+            return {
+                "plan": "execute",
+                "action": "get_booking_details",
+                "args": {"customer_email": _email},
+            }
+
+    # (3) Booking confirmation short-circuit — create flow only.
+    # C01 T4 "yes" regressed to invalid JSON / fallback. When all required
+    # booking fields are in memory and the user gives a strict affirmative,
+    # emit create_reservation directly. Excluded for intent=manage (where
+    # "yes" might mean "yes cancel" — handled by guard 4).
+    if _phase == "booking" and memory.state.get("intent") in (None, "create"):
+        _mem = memory.state
+        _has_required = all([
+            _mem.get("restaurant"),
+            _mem.get("date"),
+            _mem.get("time"),
+            _mem.get("party_size"),
+            _mem.get("customer_email"),
+        ])
+        _strict_affirmatives = {
+            "yes", "y", "yeah", "yep", "ok", "okay", "sure", "confirm",
+            "confirmed", "please confirm", "go ahead", "do it", "book it",
+            "yes please", "yes confirm", "confirm it", "book it please",
+            "yes go ahead", "yes book it",
+        }
+        if _has_required and _text_lower in _strict_affirmatives:
+            logger.info("===== BOOKING CONFIRMATION SHORT-CIRCUIT =====")
+            return {
+                "plan": "execute",
+                "action": "create_reservation",
+                "args": {
+                    "restaurant": _mem.get("restaurant"),
+                    "date": _mem.get("date"),
+                    "time": _mem.get("time"),
+                    "party_size": _mem.get("party_size"),
+                    "customer_email": _mem.get("customer_email"),
+                    "seating_pref": _mem.get("seating_pref"),
+                },
+            }
+
+    # (4) Cancel confirmation interceptor — manage flow.
+    # "yes cancel it" / "cancel please" should fire cancel_reservation
+    # without depending on the LLM to follow the Phase-3 cancel rule.
+    if (_phase == "booking"
+            and memory.state.get("intent") == "manage"
+            and memory.state.get("customer_email")):
+        if "cancel" in _text_lower and any(
+            w in _text_lower for w in ("yes", "it", "please", "confirm", "go", "now")
+        ):
+            logger.info("===== CANCEL CONFIRMATION INTERCEPTOR =====")
+            return {
+                "plan": "execute",
+                "action": "cancel_reservation",
+                "args": {"customer_email": memory.state.get("customer_email")},
+            }
+    # END PRE-LLM INTERCEPTORS
+
     try:
         settings = get_settings()
+        # Use /api/chat (not /api/generate) so qwen3's chat template is applied
+        # — this is what makes `format: "json"` actually work. With the raw
+        # /api/generate path the chat template is skipped, qwen3 still reasons
+        # in plain text (~1800 tokens of preface before the JSON), and the
+        # planner takes ~75s/turn instead of ~3s.
+        #
+        # `format: "json"` constrains decoding to valid-JSON tokens only,
+        # which is what suppresses the reasoning preamble (qwen3 cannot emit
+        # a reasoning paragraph if every token must keep the output valid
+        # JSON). Measured: 75s -> 3s, decisions stay correct across all three
+        # phase prompts (verified for execute/reply across P1/P2/P3).
+        #
+        # Known limitation: cuisine-only Phase-1 inputs (rule: "ask for more
+        # filters") sometimes still execute a search, because the model can't
+        # reason through the AND-condition without thinking tokens. Documented
+        # as an eval finding rather than patched here.
+        system_content = PHASE_PROMPT
+        # CRITICAL: keep the user message text-first and the context JSON
+        # inline (single-line). With format=json + think=false, qwen3:4b
+        # treats any pretty-printed JSON in the prompt as a template to
+        # copy — earlier turns ended up echoing `{"phase": "discovery"}`
+        # verbatim instead of producing a planner decision. Inline JSON
+        # after the user text (with an explicit do-not-echo guard) breaks
+        # the copy pattern while still giving the model the values it
+        # needs for `memory.X` substitution.
+        memory_inline = json.dumps(merged_context.get("memory", {}), ensure_ascii=False)
+        results_inline = json.dumps(recent_results, ensure_ascii=False)
+        profile_inline = json.dumps(customer_profile, ensure_ascii=False)
+        user_content = (
+            f"{user_text}\n\n"
+            "--- Context (do not echo back) ---\n"
+            f"Memory: {memory_inline}\n"
+            f"Recent results: {results_inline}\n"
+            f"Customer profile: {profile_inline}\n"
+            "Respond ONLY with one valid JSON object."
+        )
         payload = {
             "model": settings.ollama_model,
-            "prompt": full_prompt,
+            "messages": [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_content},
+            ],
             "stream": False,
-            # qwen3: disable reasoning for latency + clean JSON. Any residual
-            # preamble is removed by strip_model_reasoning below.
             "think": settings.ollama_think,
+            "format": "json",
         }
 
-        r = requests.post(settings.ollama_generate_url, json=payload, timeout=settings.ollama_timeout)
+        r = requests.post(settings.ollama_chat_url, json=payload, timeout=settings.ollama_timeout)
         r.raise_for_status()
         data = r.json()
 
@@ -227,8 +370,9 @@ def call_planner_llm(
             or ""
         ).strip()
 
-        # qwen3 emits a reasoning preamble ending in </think> even with
-        # think disabled — strip it before any JSON extraction.
+        # qwen3 with /api/chat + think=false + format=json emits clean JSON
+        # directly. strip_model_reasoning stays as a defensive fallback in
+        # case a model swap or future prompt change reintroduces a preamble.
         raw_response = strip_model_reasoning(raw_response)
 
         json_start = raw_response.find("{")
@@ -273,9 +417,24 @@ def call_planner_llm(
         # EARLY EMAIL CAPTURE (restricted to clear email-provision intents)
         email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", user_text)
         lower_text = user_text.lower()
-        # only treat as "provide email" when there's clear intent keywords
+        # Treat a matched email as "intended for capture" when:
+        #   (a) booking phase AND customer_email currently missing in memory
+        #       — the user is answering the standard "which email?" question,
+        #       so a bare email qualifies (no keyword needed); OR
+        #   (b) an explicit email-intent keyword is present
+        #       ("use X", "my email is X", etc.) — covers email changes /
+        #       out-of-phase provision.
+        # Pre-LLM guard (2) already handles the manage flow, so this branch
+        # only fires for the create flow.
         email_intent_regex = re.compile(r"\b(use|email is|my email|here is my email|here is|contact email|to create|to book|use email)\b")
-        pure_email_intent = bool(email_match and email_intent_regex.search(lower_text))
+        _in_booking_email_needed = (
+            memory.state.get("phase") == "booking"
+            and memory.state.get("customer_email") is None
+        )
+        pure_email_intent = bool(
+            email_match
+            and (_in_booking_email_needed or email_intent_regex.search(lower_text))
+        )
 
         if memory.state.get("phase") == "booking" and pure_email_intent:
             email = email_match.group(0)
@@ -342,6 +501,54 @@ def call_planner_llm(
                         "restaurant": "Which restaurant should I book?"
                     }
                     return {"plan": "reply", "reply": questions.get(field, "Could you confirm the missing details?")}
+
+        # PHASE-1 CUISINE-ONLY GUARD
+        # qwen3:4b + format=json + think=false cannot reliably apply the
+        # "cuisine exists AND no other filters -> ask for more preferences"
+        # AND-condition (Phase-1 prompt rule, lines 82-83). Without thinking
+        # tokens the model sees cuisine and immediately fires a search. Enforce
+        # the rule deterministically here so A01/A04-turn-1 style inputs ask
+        # for additional filters instead of executing a one-filter search.
+        if (validated
+                and validated.get("plan") == "execute"
+                and validated.get("action") == "search_restaurants_by_filters"
+                and memory.state.get("phase") in (None, "", "discovery")):
+            _args = validated.get("args", {}) or {}
+            _filter_keys = {"cuisine", "zone", "max_price", "min_rating", "tag"}
+            _present = {
+                k for k in _filter_keys
+                if _args.get(k) not in (None, "", [], 0)
+            }
+            if _present == {"cuisine"}:
+                logger.info("===== PHASE-1 CUISINE-ONLY GUARD FIRED =====")
+                # Persist cuisine before returning so the next turn can build
+                # on it (A04 "I want Italian" -> "In South" must carry Italian
+                # forward; without this, T2 sees an empty memory).
+                if _args.get("cuisine"):
+                    memory.update_from_planner({"cuisine": _args["cuisine"]})
+                return {
+                    "plan": "reply",
+                    "reply": "Would you like to add any other preferences such as area, budget, rating, or tags?",
+                }
+        # END PHASE-1 CUISINE-ONLY GUARD
+
+        # PHASE-1 FILTER CARRY-OVER
+        # When the user progressively reveals filters across turns, qwen3:4b
+        # + think=false often emits only the newly-mentioned filter, dropping
+        # ones already in memory. Merge memory filters into args so the
+        # search sees the full intent. Args already-present take precedence
+        # (user may be overriding a prior value).
+        if (validated
+                and validated.get("plan") == "execute"
+                and validated.get("action") == "search_restaurants_by_filters"
+                and memory.state.get("phase") in (None, "", "discovery")):
+            _args = validated.get("args", {}) or {}
+            for _filt in ("cuisine", "zone", "max_price", "min_rating", "tag"):
+                if not _args.get(_filt) and memory.state.get(_filt):
+                    _args[_filt] = memory.state[_filt]
+            validated["args"] = _args
+            logger.info("===== PHASE-1 FILTER CARRY-OVER: %s =====", validated["args"])
+        # END PHASE-1 FILTER CARRY-OVER
         # END SAFETY CHECKS
 
         # MEMORY UPDATES ONLY HERE
@@ -416,9 +623,12 @@ def call_planner_llm(
                     "party_size": cleaned.get("party_size"),
                     "phase": "availability",
                 })
-                # If time is present → auto-transition to booking
-                if cleaned.get("time"):
-                    memory.update_from_planner({"phase": "booking"})
+                # NOTE: do NOT auto-transition to booking here. Whether the
+                # slot is actually available is only known after the tool
+                # runs. The orchestrator calls update_phase_after_check_availability()
+                # post-dispatch to advance phase=booking only when
+                # is_available=true. Transitioning blindly on `time` present
+                # sends unavailable-slot turns (D01) into the booking phase.
 
             elif action == "create_reservation":
                 # Persist the booking fields carried over from the availability step.
@@ -472,3 +682,33 @@ def call_planner_llm(
     except Exception as e:
         logger.warning(f"Planner failed: {e}")
         return mock_planner_output(user_text)
+
+
+# POST-DISPATCH PHASE HOOK
+def update_phase_after_check_availability(tool_result: dict) -> None:
+    """Advance memory.phase to "booking" iff check_availability confirmed the
+    requested slot is available.
+
+    Called by the orchestrator (agent.process_user_query) AFTER the
+    check_availability tool runs. The planner cannot do this itself because
+    it sees only the planner decision, not the tool result.
+
+    Behavior:
+      mode="single" + is_available=True  -> phase = "booking"
+      mode="single" + is_available=False -> phase stays "availability"
+      mode="list"                        -> phase stays "availability"
+      ok=False                           -> phase stays "availability"
+    """
+    if not isinstance(tool_result, dict):
+        return
+    if tool_result.get("mode") == "single" and tool_result.get("is_available") is True:
+        memory.update_from_planner({"phase": "booking"})
+        logger.info("===== POST-DISPATCH: check_availability available -> phase=booking =====")
+    else:
+        cur = memory.state.get("phase")
+        if cur == "booking":
+            # Defensive: if a previous turn set booking but the latest
+            # availability check came back unavailable/list/error, revert
+            # so the user is not asked to confirm an unbookable slot.
+            memory.update_from_planner({"phase": "availability"})
+            logger.info("===== POST-DISPATCH: check_availability not available -> phase=availability =====")

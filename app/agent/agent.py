@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from app.agent.planner_agent import call_planner_llm
+from app.agent.planner_agent import call_planner_llm, update_phase_after_check_availability
 from app.agent.responder_agent import call_responder_llm
 from app.agent.tool_calls import dispatch_tool
 
@@ -99,6 +99,12 @@ def process_user_query(
                     }
                     for r in results
                 ])
+
+        # Post-dispatch phase hook: only advance to booking if the slot is
+        # actually available. The planner cannot make this call itself
+        # because it does not see the tool result.
+        if action == "check_availability":
+            update_phase_after_check_availability(tool_result)
 
         # 5 — SEND STRUCTURED PAYLOAD TO RESPONDER
         responder_payload = {

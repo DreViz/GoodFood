@@ -141,8 +141,11 @@ EXAMPLES (valid single JSON outputs)
 3) User says "GoodFoods Garden please":  
    {"plan":"execute","action":"get_seating_labels","args":{"restaurant":"GoodFoods Garden"}}
 
-4) User says "I want food": (ambiguous)  
+4) User says "I want food": (ambiguous)
    {"plan":"reply","reply":"Could you clarify what you'd like to eat or where you'd like to dine?"}
+
+5) User says "I'm in the mood for Italian" (cuisine ONLY, no other filter):
+   {"plan":"reply","reply":"Would you like to add any other preferences such as area, budget, rating, or tags?"}
 
 ========================
 FAILSAFE

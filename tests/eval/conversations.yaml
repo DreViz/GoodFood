@@ -1,0 +1,991 @@
+# =============================================================================
+# GoodFoods Evaluation Test Set
+# =============================================================================
+# Consumed by scripts/evaluate.py. Each top-level item is one conversation.
+# The runner resets conversation memory before each conversation and calls
+# POST /agent/chat turn-by-turn.
+#
+# PER-TURN EXPECTATION SCHEMA (fields under `expect`)
+#   plan                : "reply" | "execute"            (required)
+#   action              : <tool name>                    (required if plan=execute)
+#   args_subset         : { key: value, ... }            (optional; case-insensitive
+#                                                          match on string values.
+#                                                          Only the listed keys are
+#                                                          checked; extra keys ignored.)
+#   reply_contains_any  : [substr, ...]                  (optional if plan=reply;
+#                                                          pass if reply contains at
+#                                                          least one, case-insensitive)
+#   memory_after        : { key: value, ... }            (optional; checked against
+#                                                          conversation memory after
+#                                                          this turn completes)
+#
+# PER-CONVERSATION FIELDS
+#   id, category, description, turns, expected_outcome
+#   seed (optional)        : pre-conversation DB seed. Currently supports a single
+#                            reservation under `seed.reservation`. The runner inserts
+#                            it before the first turn so cancel/modify cases have
+#                            something to operate on.
+#
+# expected_outcome VALUES
+#   no_action                  : conversation ends in replies/searches only
+#   phase_reached_availability : memory.phase == availability at end
+#   phase_reached_booking      : memory.phase == booking at end
+#   booking_created            : a Reservation row landed in the DB
+#   booking_cancelled          : seeded reservation status -> cancelled
+#   booking_modified           : seeded reservation fields changed
+#   error_presented            : agent surfaced an error message to the user
+#
+# DATA NOTES (affect realism of cases)
+#   - Zones are cardinal: South, East, West, North, Central, North-East,
+#     North-West, South-East, Central-East, Far South. NOT neighborhoods.
+#   - All restaurants are branded "GoodFoods <X>".
+#   - Cuisines present: Italian, Pan-Asian, North Indian, South Indian, BBQ,
+#     Tex-Mex, Mediterranean, European, American, Chinese, Mughlai, Andhra.
+# =============================================================================
+
+
+# =============================================================================
+# Bucket A — Search / Discovery (9 conversations)
+# =============================================================================
+
+- id: A01
+  category: search
+  description: >
+    Cuisine-only triggers a clarifying reply, NOT a search.
+    Phase-1 prompt rule (lines 82-83): cuisine + no other filter -> ask the
+    user for additional preferences.
+  turns:
+    - user: "I'm in the mood for Italian"
+      expect:
+        plan: reply
+        reply_contains_any: ["preferences", "area", "budget", "rating", "tag", "other", "cuisine"]
+  expected_outcome: no_action
+
+- id: A02
+  category: search
+  description: Cuisine + zone triggers a filtered search with both args.
+  turns:
+    - user: "Any Italian places in South?"
+      expect:
+        plan: execute
+        action: search_restaurants_by_filters
+        args_subset:
+          cuisine: italian
+          zone: south
+  expected_outcome: no_action
+
+- id: A03
+  category: search
+  description: >
+    Budget phrase normalization ("under 1000" -> max_price=1000 int) plus
+    Asian-synonym handling ("asian food" -> cuisine "Asian").
+  turns:
+    - user: "Asian food under 1000"
+      expect:
+        plan: execute
+        action: search_restaurants_by_filters
+        args_subset:
+          cuisine: asian
+          max_price: 1000
+  expected_outcome: no_action
+
+- id: A04
+  category: search
+  description: >
+    Multi-turn discovery. Turn 1 cuisine-only -> clarifying reply. Turn 2 adds
+    zone -> filtered search. Validates Phase 1 holds context across turns.
+  turns:
+    - user: "I want Italian"
+      expect:
+        plan: reply
+        reply_contains_any: ["preferences", "area", "budget", "other", "rating"]
+    - user: "In South"
+      expect:
+        plan: execute
+        action: search_restaurants_by_filters
+        args_subset:
+          cuisine: italian
+          zone: south
+  expected_outcome: no_action
+
+- id: A05
+  category: search
+  description: >
+    Tag extraction with synonym. Phase-1 prompt maps "terrace / patio" ->
+    tag "outdoor seating". User says "terrace", agent emits tag="outdoor seating".
+  turns:
+    - user: "terrace dining in West"
+      expect:
+        plan: execute
+        action: search_restaurants_by_filters
+        args_subset:
+          zone: west
+          tag: outdoor seating
+  expected_outcome: no_action
+
+- id: A06
+  category: search
+  description: Suggestion request with no filters -> recommend_venues with empty args.
+  turns:
+    - user: "Any recommendations?"
+      expect:
+        plan: execute
+        action: recommend_venues
+        args_subset: {}
+  expected_outcome: no_action
+
+- id: A07
+  category: search
+  description: >
+    User names a specific restaurant -> get_seating_labels + phase transition
+    discovery -> availability. The most important Phase-1 transition.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        args_subset:
+          restaurant: goodfoods grill
+        memory_after: { phase: availability }
+  expected_outcome: phase_reached_availability
+
+- id: A08
+  category: search
+  description: Ambiguous message -> failsafe clarifying reply.
+  turns:
+    - user: "I want food"
+      expect:
+        plan: reply
+        reply_contains_any: ["clarify", "what", "cuisine", "area", "where"]
+  expected_outcome: no_action
+
+- id: A09
+  category: search
+  description: >
+    Ambiguous zone ("near me") + cuisine. Phase-1 synonyms section says
+    "near me/around here" should trigger a clarifying question, NOT a search.
+    Models vary; a search-with-zone-near-me result is a documented finding.
+  turns:
+    - user: "Italian near me"
+      expect:
+        plan: reply
+        reply_contains_any: ["area", "which", "where", "zone"]
+  expected_outcome: no_action
+
+
+# =============================================================================
+# Bucket B — Availability (9 conversations)
+# Phase 2 logic. Each case enters Phase 2 via turn 1 (naming a restaurant),
+# then exercises Phase 2 collection rules: date formats, party-size phrasings,
+# time handling, seating-label requests, and the Phase 2 -> 3 transition.
+# =============================================================================
+
+- id: B01
+  category: availability
+  description: >
+    Standard Phase 2 flow: restaurant + date + party_size in one turn, no time.
+    Planner should call check_availability with time absent/null; phase stays
+    availability (auto-transition to booking only fires when time is present).
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "18 Nov for 4 people"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 4
+        memory_after: { phase: availability }
+  expected_outcome: phase_reached_availability
+
+- id: B02
+  category: availability
+  description: >
+    "tomorrow" date format + "table for two" party-size phrasing (=2).
+  turns:
+    - user: "GoodFoods Bistro"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "table for two tomorrow"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 2
+  expected_outcome: phase_reached_availability
+
+- id: B03
+  category: availability
+  description: >
+    "we are 5" party-size phrasing + "this friday" natural date.
+  turns:
+    - user: "GoodFoods Garden"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "we are 5 people this friday"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 5
+  expected_outcome: phase_reached_availability
+
+- id: B04
+  category: availability
+  description: >
+    Multi-turn Phase 2: restaurant + party_size but no date -> reply asking
+    for the date (Phase 2 collection order: date is first).
+  turns:
+    - user: "GoodFoods Patio"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "for 3 people"
+      expect:
+        plan: reply
+        reply_contains_any: ["date", "which day", "what day"]
+  expected_outcome: phase_reached_availability
+
+- id: B05
+  category: availability
+  description: >
+    Multi-turn Phase 2: restaurant + date but no party_size -> reply asking
+    for party size.
+  turns:
+    - user: "GoodFoods Taproom"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow"
+      expect:
+        plan: reply
+        reply_contains_any: ["how many", "guests", "party", "people"]
+  expected_outcome: phase_reached_availability
+
+- id: B06
+  category: availability
+  description: >
+    Full Phase 2 with time specified -> check_availability with time, then
+    auto-transition to booking. Ends one step from create_reservation.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7:30pm for 4"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 4
+        memory_after: { phase: booking }
+  expected_outcome: phase_reached_booking
+
+- id: B07
+  category: availability
+  description: >
+    User asks to see seating options mid-Phase-2. Phase-2 prompt has an
+    explicit rule for "show/list seating" -> get_seating_labels with the
+    memory restaurant.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "show seating options"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        args_subset:
+          restaurant: goodfoods grill
+  expected_outcome: phase_reached_availability
+
+- id: B08
+  category: availability
+  description: >
+    Phase 2 -> 3 transition via slot pick with email MISSING. Phase-2 prompt
+    says reply "Which email should I use" rather than executing create_reservation.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7:30pm for 4"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "7:30pm works for me"
+      expect:
+        plan: reply
+        reply_contains_any: ["email", "which email"]
+  expected_outcome: phase_reached_booking
+
+- id: B09
+  category: availability
+  description: >
+    Out-of-scope input mid-Phase-2. Phase-2 prompt says IGNORE discovery /
+    recommendations; the failsafe reply asks for date or party size.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "what's the weather like"
+      expect:
+        plan: reply
+        reply_contains_any: ["date", "party", "guests", "clarify", "how many"]
+  expected_outcome: phase_reached_availability
+
+
+# =============================================================================
+# Bucket C — Booking completion (9 conversations)
+# End-to-end happy paths that should result in a real Reservation row.
+# Standard 4-turn shape: name restaurant -> date+time+party -> email -> confirm.
+# Variations cover input-format robustness (date formats, party phrasings,
+# confirmation phrasings, seating preference inclusion).
+# =============================================================================
+
+- id: C01
+  category: booking
+  description: Baseline happy path. "tomorrow" date, numeric party, "yes" confirm.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7:30pm for 4 people"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "john@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed", "book"]
+    - user: "yes"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: john@example.com
+          party_size: 4
+  expected_outcome: booking_created
+
+- id: C02
+  category: booking
+  description: Happy path with explicit seating preference included with email.
+  turns:
+    - user: "GoodFoods Bistro"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 8pm for 2"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "jane@example.com, indoor seating"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed", "book"]
+    - user: "yes go ahead"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: jane@example.com
+          party_size: 2
+  expected_outcome: booking_created
+
+- id: C03
+  category: booking
+  description: >
+    "18 Nov" date format. Tests relaxed date extraction.
+  turns:
+    - user: "GoodFoods Garden"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "18 Nov at 1:30pm for 6"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "team@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed", "book"]
+    - user: "please confirm"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: team@example.com
+          party_size: 6
+  expected_outcome: booking_created
+
+- id: C04
+  category: booking
+  description: Numeric date "18/11" + "table for four" phrasing (=4).
+  turns:
+    - user: "GoodFoods Patio"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "18/11 at 7pm, table for four"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "pat@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed", "book"]
+    - user: "yep"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: pat@example.com
+          party_size: 4
+  expected_outcome: booking_created
+
+- id: C05
+  category: booking
+  description: Larger party ("party of 8") and "next monday" natural date.
+  turns:
+    - user: "GoodFoods Hall"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "next monday at 7:30pm, party of 8"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "group@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed", "book"]
+    - user: "that's right, book it"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: group@example.com
+          party_size: 8
+  expected_outcome: booking_created
+
+- id: C06
+  category: booking
+  description: >
+    Phase 3 with one missing field: user gives restaurant+party+date but the
+    initial time is rejected; user supplies a fresh time. Tests Phase 3
+    re-asking behavior without losing prior slots.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow for 4"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: availability }
+    - user: "7:30pm"
+      expect:
+        plan: reply
+        reply_contains_any: ["email", "which email"]
+        memory_after: { phase: booking }
+    - user: "alex@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed"]
+    - user: "yes"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: alex@example.com
+  expected_outcome: booking_created
+
+- id: C07
+  category: booking
+  description: >
+    Negative confirmation: user declines to book. No create_reservation call,
+    no DB row. Tests that the agent doesn't book on a "no".
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7:30pm for 4"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "sam@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed"]
+    - user: "actually, let me think about it"
+      expect:
+        plan: reply
+  expected_outcome: no_action
+
+- id: C08
+  category: booking
+  description: Confirmation phrase variation "sounds good" still triggers booking.
+  turns:
+    - user: "GoodFoods Trattoria"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7pm for 3"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "marco@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed"]
+    - user: "sounds good"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: marco@example.com
+  expected_outcome: booking_created
+
+- id: C09
+  category: booking
+  description: >
+    Seating preference explicitly mentioned in the final confirmation turn.
+    Tests that seating_pref flows into create_reservation args.
+  turns:
+    - user: "GoodFoods Rooftop"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 6:30pm for 2"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "sky@example.com, outdoor seating please"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i", "proceed"]
+    - user: "yes"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: sky@example.com
+          seating_pref: outdoor
+  expected_outcome: booking_created
+
+
+# =============================================================================
+# Bucket D — Edge cases (9 conversations)
+# Robustness / safety: invalid input, hallucination guards, ambiguous matches,
+# out-of-scope. These probe the safe_extract_* and strip_memory_if_unsupported
+# guards in planner_agent.py.
+# =============================================================================
+
+- id: D01
+  category: edge
+  description: >
+    Unavailable time slot. User requests a specific time; check_availability
+    should return is_available=false with alternatives. Planner should not
+    proceed to booking with an unavailable slot.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 3:00am for 4"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: availability }
+  expected_outcome: phase_reached_availability
+
+- id: D02
+  category: edge
+  description: >
+    Invalid email format. User provides a non-email string when asked for an
+    email. The safe-extraction path should reject it and re-ask.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7:30pm for 4"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking }
+    - user: "my email is notanemail"
+      expect:
+        plan: reply
+        reply_contains_any: ["email", "valid", "which email"]
+  expected_outcome: phase_reached_booking
+
+- id: D03
+  category: edge
+  description: >
+    Hallucination guard: party_size=0. safe_extract_party_size rejects 0
+    (valid range 1-50). Planner should not store 0; should re-ask.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow for 0 people"
+      expect:
+        plan: reply
+        reply_contains_any: ["how many", "guests", "party", "people"]
+  expected_outcome: phase_reached_availability
+
+- id: D04
+  category: edge
+  description: >
+    Hallucination guard: negative party size. Should be rejected just like 0.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow for -3 people"
+      expect:
+        plan: reply
+        reply_contains_any: ["how many", "guests", "party", "people"]
+  expected_outcome: phase_reached_availability
+
+- id: D05
+  category: edge
+  description: >
+    Ambiguous restaurant name. "GoodFoods" matches all 50 venues. The fuzzy
+    resolver picks the first ilike match; behavior is non-deterministic but
+    should NOT crash. Documented finding either way.
+  turns:
+    - user: "GoodFoods"
+      expect:
+        plan: execute
+        action: get_seating_labels
+  expected_outcome: phase_reached_availability
+
+- id: D06
+  category: edge
+  description: Out-of-scope question at Phase 1. Failsafe reply, no tool call.
+  turns:
+    - user: "what's the weather today"
+      expect:
+        plan: reply
+        reply_contains_any: ["clarify", "food", "dine", "restaurant", "reservation"]
+  expected_outcome: no_action
+
+- id: D07
+  category: edge
+  description: >
+    Restaurant not in DB. Search returns empty; agent should not crash and
+    should communicate the empty result or suggest alternatives.
+  turns:
+    - user: "FakeFoods Place"
+      expect:
+        plan: execute
+        action: get_seating_labels
+  expected_outcome: no_action
+
+- id: D08
+  category: edge
+  description: >
+    Mid-conversation context switch: user changes party size after already
+    providing it. Memory should update to the new value, not retain the old.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7:30pm for 4"
+      expect:
+        plan: execute
+        action: check_availability
+        memory_after: { phase: booking, party_size: 4 }
+    - user: "actually make it 6 people"
+      expect:
+        plan: reply
+  expected_outcome: phase_reached_booking
+
+- id: D09
+  category: edge
+  description: >
+    Ambiguous time: user offers two times in one message. Behavior is
+    non-deterministic; planner should either ask for clarification or pick
+    one. Documented finding.
+  turns:
+    - user: "GoodFoods Grill"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "tomorrow at 7 or 8pm for 4"
+      expect:
+        plan: reply
+  expected_outcome: phase_reached_availability
+
+
+# =============================================================================
+# Bucket E — Cancel / Modify flows (9 conversations)
+# Each case seeds a confirmed reservation so cancel/modify have something to
+# operate on. Uses the `seed.reservation` field; the runner inserts the row
+# before turn 1.
+# =============================================================================
+
+- id: E01
+  category: cancel_modify
+  description: Cancel happy path. Seeded reservation gets soft-deleted.
+  seed:
+    reservation:
+      customer_email: cancel@example.com
+      restaurant: GoodFoods Grill
+      date: "2025-12-01"
+      time: "19:30"
+      party_size: 4
+  turns:
+    - user: "cancel my booking"
+      expect:
+        plan: reply
+        reply_contains_any: ["email", "which email"]
+    - user: "cancel@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+        args_subset:
+          customer_email: cancel@example.com
+    - user: "yes cancel it"
+      expect:
+        plan: execute
+        action: cancel_reservation
+        args_subset:
+          customer_email: cancel@example.com
+  expected_outcome: booking_cancelled
+
+- id: E02
+  category: cancel_modify
+  description: >
+    Modify time happy path. Seeded reservation's time changes; modify_reservation
+    re-validates the new slot via get_available_slots.
+  seed:
+    reservation:
+      customer_email: modify@example.com
+      restaurant: GoodFoods Grill
+      date: "2025-12-01"
+      time: "19:30"
+      party_size: 2
+  turns:
+    - user: "modify my reservation"
+      expect:
+        plan: reply
+        reply_contains_any: ["email", "which email"]
+    - user: "modify@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+    - user: "change the time to 20:00"
+      expect:
+        plan: execute
+        action: modify_reservation
+        args_subset:
+          customer_email: modify@example.com
+          new_time: "20:00"
+  expected_outcome: booking_modified
+
+- id: E03
+  category: cancel_modify
+  description: Cancel with email already supplied in turn 1 (no clarifying reply).
+  seed:
+    reservation:
+      customer_email: inline@example.com
+      restaurant: GoodFoods Bistro
+      date: "2025-12-02"
+      time: "20:00"
+      party_size: 3
+  turns:
+    - user: "cancel booking for inline@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+        args_subset:
+          customer_email: inline@example.com
+    - user: "yes please cancel"
+      expect:
+        plan: execute
+        action: cancel_reservation
+        args_subset:
+          customer_email: inline@example.com
+  expected_outcome: booking_cancelled
+
+- id: E04
+  category: cancel_modify
+  description: Modify the date (not just the time). Re-validates availability.
+  seed:
+    reservation:
+      customer_email: date@example.com
+      restaurant: GoodFoods Grill
+      date: "2025-12-01"
+      time: "19:30"
+      party_size: 4
+  turns:
+    - user: "modify my reservation for date@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+    - user: "change the date to 2025-12-05"
+      expect:
+        plan: execute
+        action: modify_reservation
+        args_subset:
+          customer_email: date@example.com
+          new_date: "2025-12-05"
+  expected_outcome: booking_modified
+
+- id: E05
+  category: cancel_modify
+  description: Modify party size. Re-validates capacity for the new size.
+  seed:
+    reservation:
+      customer_email: party@example.com
+      restaurant: GoodFoods Garden
+      date: "2025-12-03"
+      time: "19:00"
+      party_size: 2
+  turns:
+    - user: "change my booking for party@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+    - user: "make it 6 people instead"
+      expect:
+        plan: execute
+        action: modify_reservation
+        args_subset:
+          customer_email: party@example.com
+          new_party_size: 6
+  expected_outcome: booking_modified
+
+- id: E06
+  category: cancel_modify
+  description: >
+    Cancel with NO active reservation. cancel_reservation returns
+    {ok: False, error: "No active reservation for ..."}; agent should
+    surface a friendly message, not crash.
+  turns:
+    - user: "cancel my booking for ghost@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+    - user: "yes cancel it"
+      expect:
+        plan: execute
+        action: cancel_reservation
+        args_subset:
+          customer_email: ghost@example.com
+  expected_outcome: error_presented
+
+- id: E07
+  category: cancel_modify
+  description: >
+    Modify with NO active reservation. Same pattern as E06 for modify_reservation.
+  turns:
+    - user: "modify booking for nobody@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+    - user: "change to 8pm"
+      expect:
+        plan: execute
+        action: modify_reservation
+        args_subset:
+          customer_email: nobody@example.com
+  expected_outcome: error_presented
+
+- id: E08
+  category: cancel_modify
+  description: >
+    Modify to an unavailable slot. modify_reservation returns {ok: False,
+    error: "...not available...", available_slots: [...]} and DOES NOT change
+    the reservation. Seeded row should remain unchanged.
+  seed:
+    reservation:
+      customer_email: unavail@example.com
+      restaurant: GoodFoods Grill
+      date: "2025-12-01"
+      time: "19:30"
+      party_size: 4
+  turns:
+    - user: "modify my booking for unavail@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+    - user: "change the time to 3:00am"
+      expect:
+        plan: execute
+        action: modify_reservation
+        args_subset:
+          customer_email: unavail@example.com
+  expected_outcome: error_presented
+
+- id: E09
+  category: cancel_modify
+  description: >
+    User checks booking then changes mind ("actually don't change anything").
+    Should not call cancel_ or modify_reservation. Seeded row remains intact.
+  seed:
+    reservation:
+      customer_email: look@example.com
+      restaurant: GoodFoods Grill
+      date: "2025-12-01"
+      time: "19:30"
+      party_size: 4
+  turns:
+    - user: "check my booking for look@example.com"
+      expect:
+        plan: execute
+        action: get_booking_details
+        args_subset:
+          customer_email: look@example.com
+    - user: "actually leave it as is"
+      expect:
+        plan: reply
+  expected_outcome: no_action

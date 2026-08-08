@@ -113,29 +113,64 @@ def call_responder_llm(user_text: str, tool_output: dict) -> str:
 
     try:
         settings = get_settings()
+        # Use /api/chat + a strict JSON schema so the responder can't emit a
+        # reasoning preamble. qwen3 with think=false still reasons in plain
+        # text via /api/generate (no chat template applied) — the reasoning
+        # would saturate the response and the user-facing reply would be
+        # polluted. Forcing `{"reply": "<string>"}` via format=schema keeps
+        # decoding constrained to valid JSON tokens, which suppresses the
+        # reasoning phase entirely (same trick that works for the planner).
+        # The reply text is then extracted from the parsed object.
         r = requests.post(
-            settings.ollama_generate_url,
+            settings.ollama_chat_url,
             json={
                 "model": settings.ollama_model,
-                "prompt": prompt,
+                "messages": [
+                    {"role": "system", "content": RESPONDER_PROMPT.strip()},
+                    {"role": "user", "content": (
+                        f"User said: {user_text.strip()}\n"
+                        f"Tool result (structured):\n{json.dumps(tool_output, indent=2, ensure_ascii=False)}\n\n"
+                        "Write the final user-facing reply as JSON: "
+                        '{"reply": "<your reply text>"}. '
+                        "Do not include any other keys or commentary."
+                    )},
+                ],
                 "stream": False,
                 "think": settings.ollama_think,
+                "format": {
+                    "type": "object",
+                    "properties": {
+                        "reply": {"type": "string"},
+                    },
+                    "required": ["reply"],
+                    "additionalProperties": False,
+                },
             },
             timeout=settings.ollama_timeout,
         )
         r.raise_for_status()
 
         data = r.json()
-        raw_reply = str(data.get("response") or data.get("text") or "").strip()
+        raw_content = (
+            data.get("message", {}).get("content")
+            or data.get("response")
+            or ""
+        ).strip()
 
-        # Strip any qwen3 reasoning preamble before returning prose.
-        cleaned = strip_model_reasoning(raw_reply)
+        # Two-layer extraction: try JSON first, fall back to plain text.
+        cleaned = ""
+        try:
+            obj = json.loads(raw_content)
+            if isinstance(obj, dict) and isinstance(obj.get("reply"), str):
+                cleaned = obj["reply"].strip()
+        except Exception:
+            # If JSON parsing fails, fall back to stripping reasoning preamble.
+            cleaned = strip_model_reasoning(raw_content)
 
         # Only minimal safety fallback
         if not cleaned or len(cleaned) < 2:
             cleaned = "I'm here to help — could you repeat that?"
 
-        logger.warning(f"\n\n\n cleaned  {cleaned}\n\n")
         return cleaned
 
     except Exception as e:

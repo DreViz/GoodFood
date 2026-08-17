@@ -94,5 +94,9 @@ local_settings.py
 .env.test.local
 .env.production.local
 
-# Eval output (per-run reports — locally generated, not source-controlled)
-reports/
+# Eval output: timestamped per-run reports stay local. The summary + the two
+# per-model reports it references are committed (negated below).
+reports/*
+!reports/eval_summary.md
+!reports/eval_qwen3_4b_20260810T071636Z.md
+!reports/eval_qwen3_1.7b_20260817T095013Z.md

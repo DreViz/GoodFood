@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GoodFoods AI Reservation Agent — a natural-language restaurant booking system powered by a two-agent LLM architecture (Planner + Responder) backed by a local Ollama model (`qwen3:4b` by default; `qwen3:8b` for eval). Users chat via a Streamlit UI; the backend is a FastAPI server with a PostgreSQL database (via SQLAlchemy).
+GoodFoods AI Reservation Agent — a natural-language restaurant booking system powered by a two-agent LLM architecture (Planner + Responder) backed by a local Ollama model (`qwen3:4b` — selected via a measured 1.7B-vs-4B eval; 8B was dropped, it overheats the 4 GB GPU). Users chat via a Next.js UI (Streamlit is a legacy fallback); the backend is a FastAPI server with a PostgreSQL database (via SQLAlchemy). Search uses hybrid retrieval: SQL filters + sentence-embedding cosine rank (`app/retrieval/`).
 
 ## Commands
 
@@ -26,11 +26,18 @@ cd frontend && npm install && npm run dev
 # Start the legacy Streamlit frontend (port 8501) — fallback only
 streamlit run app/main.py
 
-# Run tests
+# Run tests (semantic-rank recall + fallback; eval fixtures skip without a model)
 pytest
 
 # Phase 1 smoke test (end-to-end search -> availability -> booking on the local model)
 python -m scripts.smoke_test --model qwen3:4b
+
+# Full eval harness — 45 multi-turn conversations; sets OLLAMA_MODEL before
+# app imports, so no server restart needed (calls process_user_query directly)
+python -m scripts.evaluate --model qwen3:4b
+# Reports land in reports/eval_<model>_<timestamp>.{json,md}. Per-run files are
+# gitignored; the committed set is allowlisted in .gitignore (summary + the two
+# per-model .md reports it references). JSONs stay local — the .md has the content.
 
 # Seed scripts (optional, for sample data)
 python -m scripts.generate_customers
@@ -89,6 +96,14 @@ The planner's `allowed_actions` whitelist in `planner_agent.py` is the source of
 
 Available tools (in `TOOL_SPEC`): `search_restaurants_by_filters`, `recommend_venues`, `check_availability`, `create_reservation`, `get_seating_map`, `get_amenities`, `get_booking_details`, `get_seating_labels`, `cancel_reservation`, `modify_reservation`. Cancel/modify operate on the customer's most recent `status="confirmed"` reservation (resolved by `customer_email`); cancel is a soft-delete (`status="cancelled"`).
 
+### Semantic Retrieval (hybrid search)
+
+`app/retrieval/embeddings.py` — sentence-embedding layer behind the search tools:
+
+- `search_restaurants` / `recommend_venues` accept a free-text `query` arg (planner Phase-1 prompt extracts it). SQL hard filters (cuisine/zone/price/tag) narrow candidates first, then `semantic_rank()` re-orders by cosine similarity against `all-MiniLM-L6-v2` embeddings (384-dim, in-memory matrix, cached at `app/data/restaurant_embeddings.npy` — gitignored, regenerated via `build_restaurant_index(force=True)`).
+- `_get_model()` is a lazy singleton that returns `None` on any failure (missing dep, disabled config, load error) — `semantic_rank() None` means "fall back to ilike keyword ordering". The fallback path must always work; it is unit-tested.
+- Config: `SEMANTIC_SEARCH_ENABLED`, `SEMANTIC_MODEL`, `SEMANTIC_INDEX_PATH` in `app/config.py`. Requires `sentence-transformers` (heavy: pulls torch; ~500 MB).
+
 ### API Layer
 
 `app/api/main.py` — FastAPI app. Routes are mounted under prefixes:
@@ -134,10 +149,13 @@ hardcode config in agent code.**
 | Env var | Default | Purpose |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server base URL (endpoint paths derived in code) |
-| `OLLAMA_MODEL` | `qwen3:4b` | Model tag (`qwen3:4b` dev, `qwen3:8b` eval) |
-| `OLLAMA_THINK` | `false` | qwen3 reasoning toggle (off = faster/cleaner on CPU) |
-| `OLLAMA_TIMEOUT` | `180` | Per-request timeout, seconds (qwen3:4b ≈ 6 tok/s CPU) |
+| `OLLAMA_MODEL` | `qwen3:4b` | Model tag. 4B selected via eval (93.3% vs 1.7B's 71.1% — see `reports/eval_summary.md`); 8B dropped (thermals on the 4 GB GPU) |
+| `OLLAMA_THINK` | `false` | qwen3 reasoning toggle (off = faster/cleaner) |
+| `OLLAMA_TIMEOUT` | `180` | Per-request timeout, seconds |
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/goodfoods` | PostgreSQL (JSONB columns required) |
+| `SEMANTIC_SEARCH_ENABLED` | `true` | Embedding re-rank on/off (off → ilike fallback) |
+| `SEMANTIC_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Embedding model tag |
+| `SEMANTIC_INDEX_PATH` | `app/data/restaurant_embeddings.npy` | Cached embedding index (gitignored) |
 | `GOODFOODS_EMAIL` / `GOODFOODS_EMAIL_PASSWORD` | empty | SMTP via Gmail (blank = email no-ops) |
 | `API_CORS_ORIGINS` | `http://localhost:3000,http://localhost:8501` | Allowed CORS origins (used from Phase 2) |
 
@@ -155,4 +173,6 @@ hardcode config in agent code.**
 
 ## Testing
 
-Tests in `tests/` are currently placeholder files (empty). The project uses `pytest` and `httpx` (declared in requirements.txt).
+- `tests/retrieval/test_semantic_search.py` — semantic-rank quality (precision@5 + MRR on paraphrase queries like "romantic dinner" → `date-night` tag) plus the fallback suite (search still answers via ilike with the model disabled — the production guarantee). Skips gracefully when the embedding model can't load on the host.
+- `tests/eval/conversations.yaml` — 45 multi-turn eval fixtures (buckets A–E: search, availability, booking, edge, cancel/modify) + `scorer.py` (pure functions). Driven by `scripts/evaluate.py`; results in `reports/`.
+- Framework: `pytest` (+ `httpx`), declared in requirements.txt.

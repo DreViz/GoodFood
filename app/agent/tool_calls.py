@@ -17,12 +17,12 @@ logger = logging.getLogger(__name__)
 # Tool metadata exposed to the planner LLM.
 TOOL_SPEC = {
     "search_restaurants_by_filters": {
-        "description": "Find restaurants by cuisine, zone, price, rating, or tag filters.",
-        "args": ["cuisine", "zone", "max_price", "min_rating", "tag"],
+        "description": "Find restaurants by cuisine, zone, price, rating, or tag filters. Results are semantically ranked by cuisine + the optional query vibe when available.",
+        "args": ["cuisine", "zone", "max_price", "min_rating", "tag", "query"],
     },
     "recommend_venues": {
-        "description": "Suggest restaurants based on user preferences (cuisine, tags, budget).",
-        "args": ["cuisine", "max_price", "tags"],
+        "description": "Suggest restaurants based on user preferences (cuisine, tags, budget) or a free-text vibe.",
+        "args": ["cuisine", "max_price", "tags", "query"],
     },
     "check_availability": {
         "description": "Check available slots for a restaurant by name or location ID.",
@@ -68,11 +68,18 @@ def normalize_name(name: str) -> str:
     return name
 
 
-def search_restaurants(cuisine=None, zone=None, max_price=None, min_rating=None, tag=None, limit=5):
-    """Search restaurants dynamically. Returns {'ok': True, 'results': [...] } on success."""
+def search_restaurants(cuisine=None, zone=None, max_price=None, min_rating=None, tag=None, limit=5, query=None):
+    """Search restaurants dynamically. Returns {'ok': True, 'results': [...] } on success.
+
+    Hybrid retrieval (see SEMANTIC_SEARCH_PLAN.md): hard filters (zone, price,
+    rating, tag) apply as exact SQL predicates; soft semantics (cuisine +
+    optional ``query`` free-text vibe) rank the SQL candidate set via
+    sentence-embedding cosine similarity. If the embedding model is
+    unavailable, falls back to the legacy ``ilike`` order without failing.
+    """
     session = SessionLocal()
     try:
-        logger.info("Searching restaurants with filters: %s", {"cuisine": cuisine, "zone": zone, "max_price": max_price, "min_rating": min_rating, "tag": tag})
+        logger.info("Searching restaurants with filters: %s", {"cuisine": cuisine, "zone": zone, "max_price": max_price, "min_rating": min_rating, "tag": tag, "query": query})
         q = session.query(Restaurant)
 
         if cuisine:
@@ -92,7 +99,31 @@ def search_restaurants(cuisine=None, zone=None, max_price=None, min_rating=None,
         if tag:
             q = q.filter(cast(Restaurant.tags, String).ilike(f"%{tag}%"))
 
-        results = q.limit(limit).all()
+        # Fetch the FULL candidate set first (not pre-limited), so semantic
+        # rank picks the best top-K across all matches rather than re-ordering
+        # an already-truncated 5 rows.
+        results = q.order_by(Restaurant.rating.desc()).all()
+
+        # Build the soft-semantics query string from cuisine + free-text vibe.
+        # Cuisine is both a SQL filter (above) and a semantic signal — including
+        # it here keeps it on the ranker's radar for tie-breaking.
+        semantic_query = " ".join(p for p in [cuisine, query] if p).strip()
+
+        ranked = None
+        if semantic_query and results:
+            from app.retrieval.embeddings import semantic_rank
+            candidate_ids = [r.location_id for r in results]
+            ranked = semantic_rank(semantic_query, candidate_ids, top_k=limit)
+
+        if ranked:
+            # Re-order the loaded rows by the ranker's order.
+            id_to_row = {r.location_id: r for r in results}
+            ordered = [id_to_row[lid] for lid, _ in ranked if lid in id_to_row]
+        else:
+            # Fallback: SQL order (rating desc). Slice to limit here since the
+            # ranker didn't run / didn't return usable scores.
+            ordered = results[:limit]
+
         formatted = [
             {
                 "location_id": r.location_id,
@@ -103,7 +134,7 @@ def search_restaurants(cuisine=None, zone=None, max_price=None, min_rating=None,
                 "cuisines": r.cuisines,
                 "tags": r.tags,
             }
-            for r in results
+            for r in ordered
         ]
 
         return {"ok": True, "results": formatted}
@@ -113,11 +144,25 @@ def search_restaurants(cuisine=None, zone=None, max_price=None, min_rating=None,
     finally:
         session.close()
 
-def recommend_venues(cuisine=None, max_price=None, tags=None):
-    """Recommend restaurants based on preferences. Returns {'ok': True, 'results': [...] }."""
+def recommend_venues(cuisine=None, max_price=None, tags=None, query=None, limit=3):
+    """Recommend restaurants based on preferences. Returns {'ok': True, 'results': [...]}.
+
+    Two paths:
+      - Hard filters present (cuisine/max_price) -> SQL pre-filter, then
+        semantic-rank the candidate set.
+      - No hard filters -> semantic-rank ALL restaurants by the vibe string
+        (cuisine + tags + free-text query). This is the genuine "recommend me
+        something" path.
+
+    Also fixes a latent bug: ``tags`` was accepted but never applied as a SQL
+    filter. It is now folded into the semantic query string (tags are soft
+    semantics, not exact predicates — "romantic" matches even when the DB
+    stores "date-night"). Falls back to ilike/rating order if the embedding
+    model is unavailable.
+    """
     session = SessionLocal()
     try:
-        logger.info("Recommending venues: cuisine=%s max_price=%s tags=%s", cuisine, max_price, tags)
+        logger.info("Recommending venues: cuisine=%s max_price=%s tags=%s query=%s", cuisine, max_price, tags, query)
         q = session.query(Restaurant)
         if cuisine:
             q = q.filter(cast(Restaurant.cuisines, String).ilike(f"%{cuisine}%"))
@@ -126,7 +171,35 @@ def recommend_venues(cuisine=None, max_price=None, tags=None):
                 q = q.filter(Restaurant.avg_price_per_person <= float(max_price))
             except Exception:
                 logger.warning("max_price could not be parsed to number: %s", max_price)
-        results = q.limit(3).all()
+
+        results = q.order_by(Restaurant.rating.desc()).all()
+
+        # Build the semantic vibe string from every soft signal available.
+        soft_parts = []
+        if cuisine:
+            soft_parts.append(cuisine)
+        if tags:
+            # tags may arrive as a list (planner) or comma-string.
+            if isinstance(tags, (list, tuple)):
+                soft_parts.extend(str(t) for t in tags if t)
+            else:
+                soft_parts.append(str(tags))
+        if query:
+            soft_parts.append(query)
+        semantic_query = " ".join(soft_parts).strip()
+
+        ranked = None
+        if semantic_query and results:
+            from app.retrieval.embeddings import semantic_rank
+            candidate_ids = [r.location_id for r in results]
+            ranked = semantic_rank(semantic_query, candidate_ids, top_k=limit)
+
+        if ranked:
+            id_to_row = {r.location_id: r for r in results}
+            ordered = [id_to_row[lid] for lid, _ in ranked if lid in id_to_row]
+        else:
+            ordered = results[:limit]
+
         formatted = [
             {
                 "location_id": r.location_id,
@@ -134,8 +207,10 @@ def recommend_venues(cuisine=None, max_price=None, tags=None):
                 "zone": r.zone,
                 "avg_price_per_person": r.avg_price_per_person,
                 "rating": r.rating,
+                "cuisines": r.cuisines,
+                "tags": r.tags,
             }
-            for r in results
+            for r in ordered
         ]
         return {"ok": True, "results": formatted}
     except Exception as e:
@@ -247,34 +322,37 @@ def get_booking_details(customer_email: str):
         session.close()
 
 def _normalize_date(d: str) -> str:
-    """Convert common user formats to YYYY-MM-DD safely."""
+    """Convert any user date form to YYYY-MM-DD.
+
+    Delegates to date_utils.normalize_date_to_iso so this layer shares one
+    implementation with the planner (safe_extract_date) and slot_manager.
+    Handles relative terms (today/tomorrow), this/next <weekday>, DD Mon,
+    Mon DD, DD/MM (day-first), and ISO. Returns the original string if it
+    can't be interpreted (callers treat that as a parse error downstream).
+    """
     if not d:
         return d
+    from app.api.utils.date_utils import normalize_date_to_iso
+    iso = normalize_date_to_iso(d)
+    return iso if iso else d
 
-    # If already ISO, accept
-    try:
-        datetime.strptime(d, "%Y-%m-%d")
-        return d
-    except:
-        pass
 
-    # Try common user formats
-    formats = [
-        "%d-%m-%y",
-        "%d-%m-%Y",
-        "%d/%m/%y",
-        "%d/%m/%Y",
-        "%d.%m.%Y",
-        "%d.%m.%y"
-    ]
+def _normalize_time(t: str) -> str:
+    """Convert any user time form to 24-hour HH:MM.
 
-    for fmt in formats:
-        try:
-            return datetime.strptime(d, fmt).strftime("%Y-%m-%d")
-        except:
-            continue
-
-    return d  # fallback (unchanged)
+    The twin of _normalize_date (BUG-1 sibling). The slot manager emits
+    slots as "19:30" (24-hour), but the planner often passes "7:30pm" /
+    "8 pm" verbatim. Without normalization here, the ``time in all_slots``
+    comparison NEVER matches a 12-hour input — so is_available is always
+    False, the phase never advances to booking, and every C-case cascades
+    to failure. normalize_time maps "7:30pm"->"19:30", "8pm"->"20:00".
+    Returns the original string if it can't be interpreted.
+    """
+    if not t:
+        return t
+    from app.api.utils.date_utils import normalize_time
+    nt = normalize_time(t)
+    return nt if nt else t
 
 
 def check_availability(location_id: Optional[int] = None, restaurant: Optional[str] = None, date: Optional[str] = None, time: Optional[str] = None, party_size: Optional[int] = None, **kwargs):
@@ -296,6 +374,10 @@ def check_availability(location_id: Optional[int] = None, restaurant: Optional[s
             return {"ok": False, "error": slots_data.get("error", "No available slots.")}
 
         if time:
+            # Normalize BEFORE the comparison so "7:30pm" matches slot "19:30".
+            # Without this, is_available is always False for 12-hour inputs and
+            # the phase never advances to booking (root cause of booking 0/9).
+            time = _normalize_time(time)
             all_slots = [s["time"] for s in slots_data.get("available_slots", [])]
             is_available = time in all_slots
             return {
@@ -676,6 +758,26 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 logger.info("Mapped restaurant '%s' → location_id=%s", restaurant_name, rest.location_id)
             else:
                 return {"error": f"Restaurant '{restaurant_name}' not found."}
+
+        # BUG-10: drop kwargs the target function cannot accept.
+        # qwen3:4b sometimes routes an availability-style turn to
+        # search_restaurants_by_filters with date/party_size/group_size in the
+        # args. search_restaurants() has no such params (and no **kwargs), so the
+        # call raises TypeError and the whole turn errors out. Filter args to
+        # the function's declared parameters; functions that accept **kwargs
+        # (check_availability, modify_reservation) keep everything.
+        import inspect as _inspect
+        _sig = _inspect.signature(func)
+        _accepts_var_kw = any(
+            p.kind == _inspect.Parameter.VAR_KEYWORD
+            for p in _sig.parameters.values()
+        )
+        if not _accepts_var_kw:
+            _valid = set(_sig.parameters.keys())
+            _dropped = {k: v for k, v in normalized_args.items() if k not in _valid}
+            if _dropped:
+                logger.warning("[Dispatch] Dropped unsupported kwargs for %s: %s", name, list(_dropped))
+            normalized_args = {k: v for k, v in normalized_args.items() if k in _valid}
 
         # Execute tool
         logger.info("Executing tool function: %s", func.__name__)

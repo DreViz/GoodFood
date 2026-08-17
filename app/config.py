@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     # Comma-separated list of allowed CORS origins.
     api_cors_origins: str = "http://localhost:3000,http://localhost:8501"
 
+    # --- Semantic search (hybrid retrieval) -------------------------------
+    # Kill switch: when False, search_restaurants/recommend_venues use the
+    # legacy ilike keyword path and skip the embedding model entirely.
+    semantic_search_enabled: bool = True
+    # Hugging Face model tag. all-MiniLM-L6-v2 = 90 MB, 384-dim, CPU ~ms/query.
+    # Right-sized for a 50-row corpus; larger models buy marginal recall at
+    # 10x the latency.
+    semantic_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # Persisted embeddings matrix (numpy .npy) for fast restart. Built lazily
+    # on first query if missing.
+    semantic_index_path: str = "app/data/restaurant_embeddings.npy"
+
     @property
     def ollama_generate_url(self) -> str:
         return f"{self.ollama_base_url.rstrip('/')}/api/generate"

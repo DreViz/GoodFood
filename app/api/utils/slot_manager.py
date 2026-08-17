@@ -2,6 +2,7 @@
 
 from app.data.db_connection import SessionLocal
 from app.data.db_models import Restaurant, Reservation
+from app.api.utils.date_utils import normalize_date_to_iso
 from datetime import datetime, timedelta
 import logging
 
@@ -23,6 +24,16 @@ def get_available_slots(location_id: int, date: str, party_size: int):
             msg = f"Restaurant not found for location_id={location_id}"
             logger.warning(msg)
             return {"error": msg}
+
+        # --- Step 1b: Normalize the date to ISO (defensive) ---
+        # The planner's safe_extract_date already normalizes, but this layer is
+        # also reached by the /availability REST route and /search+/book
+        # shortcuts which bypass the planner. Normalize here too so a natural
+        # date ("tomorrow", "18 Nov", "18/11") never reaches parse_opening_hours
+        # and crashes its strict strptime (EVAL_BUGS.md BUG-1).
+        iso = normalize_date_to_iso(date)
+        if iso:
+            date = iso
 
         # --- Step 2: Parse opening hours for the given date ---
         slots = parse_opening_hours(restaurant.opening_hours, date)

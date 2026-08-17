@@ -19,3 +19,7 @@ email-validator>=1.1.3
 python-dateutil>=2.8.2
 typing-extensions>=4.0.0
 pyyaml>=6.0
+# Semantic search (hybrid retrieval). Heavy dep (~500 MB, pulls torch CPU +
+# transformers). The system degrades gracefully to ilike search if this is
+# absent — see app/retrieval/embeddings.py _get_model().
+sentence-transformers>=2.7.0

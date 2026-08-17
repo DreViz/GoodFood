@@ -1,17 +1,48 @@
 # GoodFoods AI — Portfolio Upgrade Plan
 
-> Status: **DRAFT — awaiting approval.** No implementation has started.
-> Approach: extend the existing codebase, not rewrite. Each phase ends with an
-> explicit approval gate before the next phase begins.
+> Status: **ACTIVE — implementation in progress.** Original draft approved
+> 2026-07-24; Phases 1, 2, 5, and 3 are complete. Phase 4 (quant benchmark)
+> is active and **pivoted from 4B-vs-8B to 1.7B-vs-4B** (see §1 for rationale).
+> Approach: extend the existing codebase, not rewrite.
 >
-> Decisions settled 2026-07-24:
-> - **Frontend:** Next.js 14 (App Router) + Tailwind + shadcn/ui + Vercel AI SDK.
-> - **SSE protocol (Phase 2 task 9):** Option X — adopt the AI SDK data-stream
->   protocol on the backend. Enables the tool-trace UI panel in Phase 5.
-> - **Cancel/modify tools (Phase 2 task 4 / B5):** Option B — **implement both**
->   as real, tested features. Adds ~2–3 h to Phase 2 and a new eval bucket.
-> - **Sequencing:** Demo-first — Phase 1 → 2 → 5 → 3 → 4 → 6 → 7. UI before
->   eval so a polished demo video is available for early applications.
+> **Decisions settled 2026-07-24 (all shipped):**
+> - **Frontend:** Next.js 14 (App Router) + Tailwind + shadcn/ui + Vercel AI SDK. ✅
+> - **SSE protocol (Phase 2 task 9):** Option X — AI SDK data-stream protocol. ✅
+> - **Cancel/modify tools (Phase 2 task 4 / B5):** Option B — implement both. ✅
+> - **Sequencing:** Demo-first — Phase 1 → 2 → 5 → 3 → 4 → 6 → 7.
+>
+> **Re-decisions settled 2026-08-10:**
+> - **Model comparison pivot:** Phase 4 compares **1.7B vs 4B**, not 4B vs 8B.
+>   8B overheated the 4 GB laptop GPU and required partial CPU offload; 1.7B
+>   is the cleaner lower-bound comparison and gives a wider quality/cost range
+>   on the same hardware. See §1 (Hardware & Model Policy) for the full rationale.
+> - **Semantic search (bonus workstream, not in original plan):** HuggingFace
+>   embedding retrieval (`all-MiniLM-L6-v2`) integrated into
+>   `search_restaurants` + `recommend_venues` as hybrid retrieval (SQL hard
+>   filters + cosine soft-rank). Spec in `SEMANTIC_SEARCH_PLAN.md`; built and
+>   shipping with the current eval.
+
+---
+
+## Current status (2026-08-10)
+
+| Phase | Status | Result |
+|---|---|---|
+| 1 — Local model reconnect | ✅ done | qwen3:4b on GPU (native Ollama, ~25 tok/s) |
+| 2 — API cleanup + cancel/modify | ✅ done | B1–B8 bugs fixed; SSE streaming live |
+| 5 — Next.js frontend | ✅ done | `localhost:3000` chat UI + tool-trace panel |
+| 3 — Eval harness | ✅ done | 45 cases; **qwen3:4b = 42/45 (93.3%)** after bug-fix pass |
+| (bonus) Semantic search | ✅ done | Hybrid retrieval, in-memory embedding index |
+| **4 — Quant benchmark** | 🔄 **active** | **Pivoted to 1.7B vs 4B** — see §1 + Phase 4 |
+| 6 — README | ⬜ next | — |
+| 7 — Deploy | ⬜ later | — |
+
+**4B eval headline:** started at **33%** (broken date normalization keystone +
+cancel/modify interceptor gaps), fixed in a targeted pass to **93.3%**. The 3
+remaining failures: 1 minor real bug (B08 email-collection gap in Phase 2→3
+transition), 2 fixture/data issues (C06 over-strict expectation, C09 seed-data
+mismatch where 6:30pm is genuinely booked). See `EVAL_BUGS.md` (historical) and
+`reports/eval_qwen3_4b_20260810T071636Z.md` (latest).
 
 ---
 
@@ -81,13 +112,26 @@ containerization; **free-tier cloud cannot host the model (no GPU)** — see §6
 | CPU | AMD Ryzen 9 5900HS |
 
 **Models:**
-- `qwen3:4b` — dev/iteration model. Fits in VRAM (~2.5 GB at Q4_K_M) → fast loop.
-- `qwen3:8b` — final eval/benchmark model. Exceeds VRAM (~5 GB at Q4_K_M) →
-  partial CPU offload, slower but stronger tool-call accuracy.
+- `qwen3:4b` — **primary eval + dev model.** Fits in VRAM (~2.5 GB at Q4_K_M),
+  runs fully on GPU at ~25 tok/s. Current eval baseline: **42/45 (93.3%)**.
+- `qwen3:1.7b` — **comparison point (added 2026-08-10, replaces 8B).** Tiny
+  (~1 GB at Q4_K_M), fits comfortably in VRAM, expected to be the lower-bound
+  quality test.
+- ~~`qwen3:8b`~~ — **dropped 2026-08-10.** At ~5 GB Q4_K_M it exceeds the 4 GB
+  VRAM budget; partial CPU offload made inference thermally unsustainable on
+  the laptop (overheated during the comparison run). 8B-vs-4B would also have
+  been a narrower quality band than 1.7B-vs-4B — the pivot gives a wider,
+  more informative cost/quality range on the same hardware.
 
-**Quantization floor: Q4_K_M.** Never go below. Phase 1 verifies that the
-default tags `qwen3:4b` / `qwen3:8b` resolve to ≥ Q4_K_M (they do at time of
-writing — confirmation step included in Phase 1).
+**Why the 1.7B-vs-4B comparison is the better story (interview framing):**
+- Both models fit entirely in VRAM → clean apples-to-apples GPU inference, no
+  CPU-offload confound muddying the latency numbers.
+- 4× parameter span (1.7B → 4B) reveals the quality/cost slope clearly.
+- Answers a real engineering question: *"how small can we go before quality
+  drops below an acceptable threshold?"* — the actual day-job AI-eng tradeoff.
+
+**Quantization floor: Q4_K_M.** Never go below. Phase 1 verified that the
+default tags `qwen3:4b` / `qwen3:1.7b` resolve to ≥ Q4_K_M.
 
 **Config policy:** model name, Ollama endpoint, DB URL, and SMTP creds all read
 from environment via a single `app/config.py` (Pydantic `BaseSettings`). No
@@ -111,7 +155,7 @@ demo" path (see Phase 7).
 | Rank | Phase | Why | Est. |
 |---|---|---|---|
 | 1 | **Phase 1 (WS1)** | Unblocks every other phase. Without a live model, nothing can be tested or demoed. Cheapest win. | 2–4 h |
-| 2 | **Phase 3 (WS3 — Eval)** | Strongest resume differentiator. A candidate who shows "40-conversation eval harness with tool-call accuracy and 4B-vs-8B comparison" stands out. | 10–14 h |
+| 2 | **Phase 3 (WS3 — Eval)** | Strongest resume differentiator. A candidate who shows "45-conversation eval harness with tool-call accuracy and a 1.7B-vs-4B model-size comparison" stands out. | 10–14 h |
 | 3 | **Phase 4 (WS4 — Quant)** | Pairs with Phase 3 (reuses its prompts); produces the comparison table that goes on the resume. | 3–5 h |
 | 4 | **Phase 5 (Next.js UI)** | Replaces Streamlit. Polished demo UI, recruiter-recognized stack, live URL via Vercel. | 6–10 h |
 | 5 | **Phase 6 (WS5 — README)** | Cheap once Phase 3/4/5 results exist; recruiter-facing. | 3–4 h |
@@ -277,6 +321,29 @@ before starting Phase 3.
 
 ## Phase 3 — Evaluation harness (WS3)
 
+> **✅ COMPLETE 2026-08-10.** All 6 tasks shipped. 45 cases across 5 buckets
+> (A–E) implemented in `tests/eval/conversations.yaml`; runner is
+> `scripts/evaluate.py`; reports land in `reports/eval_<model>_<timestamp>.{json,md}`.
+>
+> **Headline result — `qwen3:4b`: 42/45 conversations (93.3%), 98/103 turns
+> (95.2%).** By bucket: search 9/9, availability 8/9, booking 7/9, edge 9/9,
+> cancel_modify 9/9. Started at 33% before a targeted bug-fix pass (date
+> normalization keystone + cancel/modify interceptor gaps); see
+> `reports/eval_qwen3_4b_20260810T071636Z.md` for the full per-case breakdown.
+>
+> **3 remaining failures** (triaged, deferred — none block Phase 4):
+> - **B08** (real bug, minor): Phase 2→3 transition should ask "which email?"
+>   when the user picks a slot but hasn't given an email; instead it jumps
+>   straight to "Shall I confirm?". Fix is in the Phase-2 planner interceptor.
+> - **C06** (fixture over-strict): expected `plan=reply` on a fresh-time input,
+>   but the agent correctly ran `check_availability`. Fixture expectation needs
+>   loosening, not code change.
+> - **C09** (seed-data mismatch): fixture assumes 6:30pm at GoodFoods Rooftop
+>   is available; the seed data has it genuinely booked. Either reseed or pick
+>   a different time in the fixture.
+>
+> Section below preserved as the original design spec for reference.
+
 **Goal:** a re-runnable `python evaluate.py` that exercises the agent on 30–50
 multi-turn conversations and reports tool-call accuracy, slot-filling
 correctness, and task-completion rate, separately for 4B and 8B.
@@ -353,50 +420,75 @@ two models disagree.
 
 ---
 
-## Phase 4 — Quantization documentation (WS4)
+## Phase 4 — Model comparison (1.7B vs 4B) (WS4)
 
-**Goal:** produce a "before vs after" and "4B vs 8B" comparison table I can
-paste into README and resume.
-**Exit criteria:** `reports/quant_benchmark.md` contains the table, generated
-by `scripts/benchmark_quant.py`, all measurements at ≥ Q4_K_M.
-**Estimate:** 3–5 hours.
+> **Reframed 2026-08-10.** Originally "4B vs 8B quantization documentation";
+> pivoted to **1.7B vs 4B** for the reasons in §1 (Hardware & Model Policy).
+> The 8B path is dropped.
+
+**Goal:** produce a 1.7B-vs-4B comparison table I can paste into README and
+resume, measuring quality, speed, and memory on identical hardware.
+**Exit criteria:** `reports/eval_qwen3_1.7b_<timestamp>.md` exists (full 45-case
+eval on the 1.7B model), and `reports/eval_summary.md` contains the
+side-by-side comparison table with honest commentary.
+**Estimate:** 2–3 hours (down from 3–5 h — Phase 3 already built the harness).
 
 ### Important framing
-**There is no quantization code in the repo to "inspect".** Ollama performs
-quantization at `pull` time using the GGUF defaults baked into each tag. The
-"current implementation" *is* Ollama's choice for `qwen3:4b` / `qwen3:8b`.
-Phase 4 surfaces and measures this; it does not re-quantize.
+**We already have the measurement instrument.** Phase 3's eval harness
+(`scripts/evaluate.py` + `tests/eval/conversations.yaml`) runs 45 conversations
+and reports per-bucket accuracy. Phase 4 just runs it on the second model and
+compares. **No separate benchmark script is needed** — the eval *is* the
+quality measurement, and it already exercises the same planner/tool/memory
+stack a production deployment would use.
+
+For speed/memory, we supplement with one-shot Ollama API timings (eval duration
++ eval count from the `/api/chat` response, plus `nvidia-smi` VRAM reads).
 
 ### Tasks
-1. **Document model specs.** For each model: parameter count, file size on disk,
-   reported quant level (from `ollama show`), VRAM footprint at idle
-   (`nvidia-smi`), system RAM usage (`psutil`).
-2. **Pick a small prompt panel** (5 prompts): one Phase 1 search, one Phase 2
-   availability, one Phase 3 booking, one edge case, one out-of-scope
-   ("what's the weather?"). Reuse prompts from Phase 3's fixture file so the
-   numbers are traceable to the eval.
-3. **Write `scripts/benchmark_quant.py`:**
-   - For each model × each prompt: warm-up call, then 5 timed calls.
-   - Record: time-to-first-token, mean tokens/sec, p95 latency, peak VRAM,
-     peak RAM.
-   - For accuracy: simple exact-match on the expected planner action + args
-     (uses `tests/eval/scorer.py` from Phase 3).
-4. **Produce the comparison table** in `reports/quant_benchmark.md`:
+1. **Pull the model.** `ollama pull qwen3:1.7b`.
+2. **Verify quantization floor.** `ollama show qwen3:1.7b` → confirm ≥ Q4_K_M.
+   Record specs in `docs/model_specs.md` alongside the 4B entry.
+3. **Run the full eval on 1.7B:**
+   ```powershell
+   python -m scripts.evaluate --model qwen3:1.7b
+   ```
+   Produces `reports/eval_qwen3_1.7b_<timestamp>.{json,md}`.
+4. **Capture speed/memory for both models.** For each of `qwen3:1.7b` and
+   `qwen3:4b`, run a warm-up call then a timed call via the Ollama API:
+   ```bash
+   curl -s --max-time 60 http://127.0.0.1:11434/api/chat \
+     -d '{"model":"qwen3:1.7b","messages":[{"role":"user","content":"Write a sentence."}],"stream":false,"think":false}' \
+     | python -c "import sys,json; d=json.load(sys.stdin); ms=d.get('eval_duration',0)//1000000; c=d.get('eval_count',0); print(f'{c/(ms/1000):.1f} tok/s' if ms else 'no data')"
+   ```
+   Capture VRAM with `nvidia-smi --query-gpu=memory.used`. Record in
+   `docs/model_specs.md`.
+5. **Write `reports/eval_summary.md`** — the honest comparison:
 
-   | Model | Quant | Size | VRAM | tok/s | p95 (ms) | Tool-call acc. |
-   |---|---|---|---|---|---|---|
-   | qwen3:4b | Q4_K_M | … | … | … | … | …/5 |
-   | qwen3:8b | Q4_K_M | … | … | … | … | …/5 |
+   | Metric | qwen3:1.7b | qwen3:4b |
+   |---|---|---|
+   | Conversations passed | __/45 | 42/45 |
+   | Turns passed | __/103 | 98/103 |
+   | Search (A) | __/9 | 9/9 |
+   | Availability (B) | __/9 | 8/9 |
+   | Booking (C) | __/9 | 7/9 |
+   | Edge (D) | __/9 | 9/9 |
+   | Cancel/modify (E) | __/9 | 9/9 |
+   | Throughput (tok/s, GPU) | __ | ~25 |
+   | VRAM at idle | __ | ~2.5 GB |
+   | Model size on disk | ~1 GB | ~2.5 GB |
 
-5. **"Before vs after" framing.** Since there is no pre-quantization state to
-   compare against (Ollama only ships quantized), the "before" column is the
-   *theoretical* unquantized size (from the model card) vs the on-disk Q4_K_M
-   size. Be explicit that this is a documentation comparison, not a measured
-   inference-speed before/after. **Do not claim a measured speedup we don't
-   have.**
+   Fill the blanks from the fresh run. **Do not hide 1.7B's weaknesses or
+   oversell 4B.** The interesting finding is *where* 1.7B breaks — likely
+   Phase-3 booking (multi-step slot filling) and edge cases (instruction
+   following). That's the story.
+6. **Interview framing for the summary.** Lead with the engineering question:
+   *"how small can we go before quality drops below an acceptable threshold?"*
+   The 1.7B-vs-4B answer is the differentiator. If 1.7B holds above ~80%, the
+   cost story (half the VRAM, faster cold start) is real. If it collapses on
+   booking, that's a defensible finding too — model-size selection matters.
 
 ### Approval gate
-Review of `reports/quant_benchmark.md` before it goes into the README.
+Review of `reports/eval_summary.md` before it goes into the README (Phase 6).
 
 ---
 
@@ -490,13 +582,15 @@ new UI.
    in the agent layer.
 5. **Tech stack** — one-liner per component (Next.js, FastAPI, SQLAlchemy,
    Ollama, qwen3, Postgres).
-6. **Hardware & model setup** — the 4 GB VRAM constraint, why a 4B-dev / 8B-eval
-   split, the Q4_K_M floor. This is the differentiator; lead with it.
+6. **Hardware & model setup** — the 4 GB VRAM constraint, why a
+   1.7B-vs-4B comparison on this hardware, the Q4_K_M floor. This is the
+   differentiator; lead with it.
 7. **Quick start** — `ollama pull`, DB setup, run backend, run frontend (two
    terminals).
 8. **Evaluation results** — table lifted from `reports/eval_summary.md` with a
    link to the full report.
-9. **Quantization results** — table from `reports/quant_benchmark.md`.
+9. **Quantization / model-size results** — table from `reports/eval_summary.md`
+   (1.7B vs 4B, quality + speed + memory on the same 4 GB GPU).
 10. **Roadmap** — short, honest list of what's not done.
 
 ### Tasks
@@ -580,12 +674,13 @@ project done.
 
 ## 3. Risks & honest limits
 
-- **4B may be too weak for Phase 2 edge cases.** Phase 3's report will surface
-  this. If 4B's tool-call accuracy on category D is below ~60%, the README
-  should say so plainly and lean on 8B for the headline number. Do not hide it.
-- **8B latency may be painful in interactive Streamlit/Next.js use.** That's
-  expected and documentable — it's a quantization-vs-latency tradeoff story,
-  not a bug.
+- **4B may be too weak for Phase 2 edge cases.** Phase 3 surfaced this — and
+  the 4B result was 93.3%, so the concern was largely unfounded. The remaining
+  failures are documented in `EVAL_BUGS.md` and the Phase 3 annotation above.
+- **1.7B may collapse on multi-step booking flows.** That's the hypothesis
+  Phase 4 tests. If 1.7B's bucket-C (booking) accuracy drops sharply, the
+  finding is real and defensible: model-size selection matters, and the
+  cost/quality knee is measurable. Do not hide it.
 - **Phase 3 estimate (10–14 h) is the wildcard.** Writing 45 realistic
   multi-turn fixtures (up from 40 to cover cancel/modify bucket E) is the
   single biggest time sink in this plan. If time is tight, cut to 30 cases

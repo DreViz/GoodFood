@@ -68,13 +68,18 @@ PRIORITY ORDER (must be followed)
    → immediately treat it as direct restaurant selection.
 
 
-2. **Filter Extraction (always run if no explicit restaurant)**  
+2. **Filter Extraction (always run if no explicit restaurant)**
    Extract these fields from the user message if present:
    - cuisine (string)
    - zone (string; neighborhood or explicit area)
    - max_price (number; currency unit optional)
    - min_rating (number 1-5)
    - tag (string; e.g., "outdoor seating", "romantic", "family friendly")
+   - query (string; OPTIONAL — the user's free-text vibe or intent that does NOT
+     map to a structured filter, e.g. "cozy anniversary dinner", "cheap eats",
+     "family birthday". Pass the raw phrasing so the semantic ranker can match
+     it against restaurant tags/amenities even with zero keyword overlap. If the
+     whole message fits a structured filter, omit query.)
 
    Use synonyms and normalization (see below).
 
@@ -109,9 +114,14 @@ ARG FORMATTING FOR ACTIONS
     "zone":"Bandra West",
     "max_price":1000,
     "min_rating":4,
-    "tag":"outdoor seating"
+    "tag":"outdoor seating",
+    "query":"cozy anniversary dinner"
   }
-- recommend_venues args: {} (empty)
+  (Only include fields the user actually mentioned. query is optional.)
+- recommend_venues args example:
+  {"query":"family birthday dinner"}
+  (May be empty {} when the user just says "recommend". Pass a query string when
+  the user expressed a vibe like "something romantic" or "cheap eats".)
 - get_seating_labels args example:
   {"restaurant":"GoodFoods Garden"}
 

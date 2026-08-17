@@ -121,7 +121,17 @@ After details are fetched:
 - If user clearly asks to modify:
     Ask ONE missing modification detail (new date, time, etc.)
     Then:
-    {"plan":"execute","action":"modify_reservation","args":{...}}
+    {"plan":"execute","action":"modify_reservation","args":{
+       "customer_email": memory.customer_email,
+       "new_date": "<value only if user gave a new date>",
+       "new_time": "<value only if user gave a new time>",
+       "new_party_size": <number only if user gave a new party size>,
+       "new_seating_pref": "<value only if user gave a new seating pref>"
+    }}
+
+    IMPORTANT — modification arg names use the "new_" prefix:
+      new_date, new_time, new_party_size, new_seating_pref.
+    Only include the fields the user actually wants to change.
 
 ====================================================
 FAILSAFE

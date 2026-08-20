@@ -1,0 +1,48 @@
+# Phase 8 — fine-tuning dependencies (GPU machine only)
+#
+# Deliberately SEPARATE from requirements.txt. These pull ~3 GB (torch, CUDA
+# kernels, transformers); the API, agent, frontend and eval harness need none of
+# them. Install into its own virtualenv so the runtime stack stays small.
+#
+# ---------------------------------------------------------------------------
+# INSTALL (Windows 11 / RTX 3050, in this order)
+# ---------------------------------------------------------------------------
+#   1. CUDA build of torch FIRST — pip cannot infer this, and installing it
+#      from PyPI silently gives you a CPU-only build:
+#        pip install torch --index-url https://download.pytorch.org/whl/cu121
+#
+#   2. Everything else:
+#        pip install -r requirements-finetune.txt
+#
+#   3. Confirm the GPU is actually visible:
+#        python -c "import torch; print(torch.cuda.get_device_name(0))"
+#        -> NVIDIA GeForce RTX 3050 Laptop GPU
+#
+# NOTE — GGUF export needs a llama.cpp build, which Unsloth clones and compiles
+# on first use. On Windows that requires CMake + the Visual Studio C++ build
+# tools. Install those before running scripts/export_planner_gguf.py, or export
+# on WSL2. Nothing else in the pipeline needs a compiler.
+#
+# Versions are floors, not pins: Unsloth tracks transformers/trl closely and
+# pinning exact releases tends to break the install a month later. The trainer
+# is written to tolerate the API renames across these versions (see
+# _prefer_kwarg / _filtered_kwargs in scripts/train_planner_qlora.py).
+# ---------------------------------------------------------------------------
+
+# QLoRA trainer + its own pinned stack (pulls unsloth_zoo, xformers, ...)
+unsloth
+
+# Explicit floors for the pieces the scripts import directly
+transformers>=4.44
+trl>=0.9
+peft>=0.12
+accelerate>=0.33
+datasets>=2.20
+
+# 4-bit base-model quantisation (the "Q" in QLoRA)
+bitsandbytes>=0.43
+
+# Tokenizer + base-model download from Hugging Face
+sentencepiece>=0.2
+protobuf>=4.25
+huggingface-hub>=0.24

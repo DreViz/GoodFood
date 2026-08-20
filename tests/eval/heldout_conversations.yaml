@@ -1,0 +1,284 @@
+# =============================================================================
+# GoodFoods HELD-OUT Evaluation Set (Phase 8)
+# =============================================================================
+# A second, smaller benchmark used to check the fine-tuned planner against
+# conversations it has never seen. Run it with the same harness:
+#
+#   python -m scripts.evaluate --model goodfoods-planner \
+#       --fixture tests/eval/heldout_conversations.yaml
+#
+# PROVENANCE / INTEGRITY
+#   - These 10 conversations are NOT in the training data and NOT derived from
+#     it: scripts/generate_training_data.py never reads this file (or
+#     conversations.yaml), and tests/training asserts zero verbatim overlap
+#     between generated utterances and both fixture sets.
+#   - They are also distinct from the 45 in conversations.yaml, so a model can
+#     be scored on both without one leaking into the other.
+#
+# SCHEMA — identical to conversations.yaml (consumed by scripts/evaluate.py):
+#   per turn : plan, action, args_subset, reply_contains_any, memory_after
+#   per convo: id, category, description, turns, expected_outcome, seed
+#
+# COVERAGE (as specified for Phase 8)
+#   H01-H02  discovery / search
+#   H03-H05  availability
+#   H06-H08  booking (H07 seating preference, H08 decline must NOT book)
+#   H09-H10  edge (party size 0, a time outside opening hours)
+#
+# DATA NOTES
+#   - Zones are cardinal (South, East, West, North, Central, North-East,
+#     North-West, South-East, Central-East, Far South) — not neighbourhoods.
+#   - Restaurants are all branded "GoodFoods <X>"; every name below exists in
+#     app/data/goodfoods_locations_unique_50.json.
+#   - Opening hours (scripts/add_opening_hours.py) are lunch 12:00-15:30/16:00
+#     and dinner 19:00-23:00/23:30, in 30-minute slots. H10 exploits the gap
+#     between services, so its "unavailable" slot is unavailable by the
+#     schedule itself rather than by seeded bookings — no reseeding required.
+#   - Dates are written without a year; date_utils rolls them to the next
+#     occurrence, so these stay valid indefinitely.
+# =============================================================================
+
+
+# =============================================================================
+# Discovery / search
+# =============================================================================
+
+- id: H01
+  category: search
+  description: >
+    Cuisine plus a zone in a single turn. Two filters are present, so the
+    planner must search immediately rather than asking for more preferences.
+  turns:
+    - user: "We fancy Mediterranean, ideally North-West"
+      expect:
+        plan: execute
+        action: search_restaurants_by_filters
+        args_subset:
+          cuisine: Mediterranean
+          zone: North-West
+  expected_outcome: no_action
+
+- id: H02
+  category: search
+  description: >
+    Budget-constrained discovery, then the user picks one of the results by
+    name — which must hand off to Phase 2 via get_seating_labels.
+  turns:
+    - user: "Anything in Central that stays under 900 a head?"
+      expect:
+        plan: execute
+        action: search_restaurants_by_filters
+        args_subset:
+          zone: Central
+          max_price: 900
+    - user: "GoodFoods Deck, then"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        args_subset:
+          restaurant: GoodFoods Deck
+        memory_after: { phase: availability }
+  expected_outcome: phase_reached_availability
+
+
+# =============================================================================
+# Availability
+# =============================================================================
+
+- id: H03
+  category: availability
+  description: >
+    Date and party size arrive together with no time. The planner should run
+    an open availability check rather than inventing a time.
+  turns:
+    - user: "GoodFoods Brasserie"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "We'll be 6 people on 14 Dec"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 6
+  expected_outcome: phase_reached_availability
+
+- id: H04
+  category: availability
+  description: >
+    A specific dinner-service time is offered up front. The slot must be
+    verified with check_availability before the conversation may reach booking
+    — this is the exact step the 1.7B skips.
+  turns:
+    - user: "GoodFoods Chophouse"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "Table for 4 on 3 Feb at 8pm"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 4
+  expected_outcome: phase_reached_booking
+
+- id: H05
+  category: availability
+  description: >
+    Party size first, date missing. Collection order is date then party size,
+    so the planner must ask for the date and only check once it has both.
+  turns:
+    - user: "GoodFoods Alcove"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "There will be 8 guests"
+      expect:
+        plan: reply
+        reply_contains_any: ["date", "day"]
+    - user: "Next saturday, please"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 8
+  expected_outcome: phase_reached_availability
+
+
+# =============================================================================
+# Booking
+# =============================================================================
+
+- id: H06
+  category: booking
+  description: >
+    Full happy path: select, verify the slot, hand over an email, confirm.
+    create_reservation may only fire on the final turn.
+  turns:
+    - user: "GoodFoods Vault"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "6 guests on 11 Jan at 7:30pm"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 6
+    - user: "ines.torres@example.com"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i"]
+    - user: "Yes, please confirm"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: ines.torres@example.com
+          party_size: 6
+  expected_outcome: booking_created
+
+- id: H07
+  category: booking
+  description: >
+    Seating preference supplied alongside the email; it must survive into
+    memory and reach create_reservation's args.
+  turns:
+    - user: "GoodFoods Terrace"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "4 people on 19 Jan, 8:30pm"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 4
+    - user: "wes.oduya@example.org, and we'd like to sit outside"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i"]
+        memory_after: { seating_pref: outdoor }
+    - user: "Perfect, go ahead"
+      expect:
+        plan: execute
+        action: create_reservation
+        args_subset:
+          customer_email: wes.oduya@example.org
+          seating_pref: outdoor
+  expected_outcome: booking_created
+
+- id: H08
+  category: booking
+  description: >
+    The user backs out at the confirmation step. Everything needed for a
+    booking is in memory, which is precisely when a weak planner fires
+    create_reservation anyway — it must not.
+  turns:
+    - user: "GoodFoods Cellar"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "2 people on 27 Jan at 9pm"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 2
+    - user: "hana.k@example.net"
+      expect:
+        plan: reply
+        reply_contains_any: ["confirm", "shall i"]
+    - user: "Actually, hold on - I need to check with my partner first"
+      expect:
+        plan: reply
+  expected_outcome: no_action
+
+
+# =============================================================================
+# Edge cases
+# =============================================================================
+
+- id: H09
+  category: edge
+  description: >
+    Party size of zero. It must never be stored or passed to a tool; the
+    planner re-asks for a usable number.
+  turns:
+    - user: "GoodFoods Nook"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "next friday, 0 guests"
+      expect:
+        plan: reply
+        reply_contains_any: ["guests", "how many", "positive"]
+  expected_outcome: phase_reached_availability
+
+- id: H10
+  category: edge
+  description: >
+    17:30 falls in the gap between lunch and dinner service, so no such slot
+    exists on any day. The planner must still check rather than assume, and
+    the conversation must NOT advance to booking on an unavailable slot.
+  turns:
+    - user: "GoodFoods Tavern"
+      expect:
+        plan: execute
+        action: get_seating_labels
+        memory_after: { phase: availability }
+    - user: "5 people on 6 Feb at 5:30pm"
+      expect:
+        plan: execute
+        action: check_availability
+        args_subset:
+          party_size: 5
+        memory_after: { phase: availability }
+  expected_outcome: phase_reached_availability

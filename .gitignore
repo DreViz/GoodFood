@@ -43,6 +43,18 @@ app/.venv/
 # Project specific
 # Embedding index cache — regenerable via build_restaurant_index(force=True)
 app/data/*.npy
+
+# Phase 8 fine-tuning artifacts — all regenerable, none belong in git.
+# Anchored (leading /) on purpose: an unanchored `data/` would also match
+# app/data/, which holds the tracked restaurant seed JSON — the same trap the
+# /lib/ entry above documents.
+#   /data/     generated training JSONL + manifest (~25 MB, 0.3s to rebuild)
+#   /adapters/ trained LoRA + checkpoints (the only expensive artifact — back
+#              it up outside git; see docs/FINE_TUNING.md)
+#   /gguf/     merged + quantised model (>1 GB; GitHub rejects >100 MB files)
+/data/
+/adapters/
+/gguf/
 *.log
 *.sqlite3
 *.db

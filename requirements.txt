@@ -23,3 +23,7 @@ pyyaml>=6.0
 # transformers). The system degrades gracefully to ilike search if this is
 # absent — see app/retrieval/embeddings.py _get_model().
 sentence-transformers>=2.7.0
+
+# Fine-tuning the planner (Phase 8) needs unsloth + a CUDA torch build and is
+# GPU-only, so it lives in requirements-finetune.txt — install that separately
+# on the training machine. See docs/FINE_TUNING.md.

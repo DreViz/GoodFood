@@ -1,0 +1,45 @@
+# GoodFoods fine-tuned planner — Ollama model definition (Phase 8)
+#
+# Build (from the repo root, after scripts/export_planner_gguf.py):
+#   ollama create goodfoods-planner -f Modelfile.goodfoods-planner
+#
+# Then swap the planner over with one env var:
+#   OLLAMA_MODEL=goodfoods-planner        (app/config.py)
+#
+# Base: unsloth/Qwen3-1.7B + the GoodFoods planner LoRA, merged and quantised
+# to Q4_K_M — the project's quantization floor (docs/model_specs.md).
+
+FROM ./gguf/goodfoods-planner-q4km.gguf
+
+# --- Sampling ---------------------------------------------------------------
+# app/agent/planner_agent.py sends no `options` block, so whatever is declared
+# here IS the effective runtime configuration for every planner call.
+# Qwen3's published sampling defaults; temperature stays low because the
+# planner emits JSON, not prose.
+PARAMETER temperature 0.6
+PARAMETER top_k 20
+PARAMETER top_p 0.95
+
+# 8192 matches the context the eval ran with (reports/eval_summary.md notes the
+# 8K KV cache). The largest planner turn — the Phase-1 discovery prompt plus
+# the memory/results context — measures ~2.2k tokens, so this leaves headroom
+# without inflating the KV cache on a 4 GB GPU.
+PARAMETER num_ctx 8192
+
+# Qwen3/ChatML turn terminators. Without these Ollama can run past the end of
+# the JSON object and the planner's bracket-matching has to clean up after it.
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"
+
+# --- Chat template ----------------------------------------------------------
+# ChatML, matching how the model was fine-tuned. The agent sends exactly one
+# system message (the phase prompt) and one user message (utterance + inline
+# context) per turn via /api/chat, which maps onto .System / .Prompt directly.
+# Reasoning is deliberately not enabled: the runtime sets think=false and
+# format=json, and the training targets are bare JSON with no <think> preamble.
+TEMPLATE """<|im_start|>system
+{{ .System }}<|im_end|>
+<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""

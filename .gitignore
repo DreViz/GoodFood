@@ -28,8 +28,12 @@ env/
 ENV/
 .env
 .venv/
+.venv-train/
 */.venv/
 app/.venv/
+
+# Unsloth runtime bytecode cache (regenerated on each training run)
+unsloth_compiled_cache/
 
 # IDE specific files
 .idea/

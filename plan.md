@@ -1,9 +1,9 @@
 # GoodFoods AI — Portfolio Upgrade Plan
 
 > Status: **ACTIVE — implementation in progress.** Original draft approved
-> 2026-07-24; Phases 1, 2, 5, and 3 are complete. Phase 4 (quant benchmark)
-> is active and **pivoted from 4B-vs-8B to 1.7B-vs-4B** (see §1 for rationale).
-> Approach: extend the existing codebase, not rewrite.
+> 2026-07-24; Phases 1, 2, 5, 3, and 4 are complete. Phase 6 (README) is
+> active. Phase 4 was **pivoted from 4B-vs-8B to 1.7B-vs-4B** (see §1) and
+> completed 2026-08-17. Approach: extend the existing codebase, not rewrite.
 >
 > **Decisions settled 2026-07-24 (all shipped):**
 > - **Frontend:** Next.js 14 (App Router) + Tailwind + shadcn/ui + Vercel AI SDK. ✅
@@ -21,6 +21,14 @@
 >   `search_restaurants` + `recommend_venues` as hybrid retrieval (SQL hard
 >   filters + cosine soft-rank). Spec in `SEMANTIC_SEARCH_PLAN.md`; built and
 >   shipping with the current eval.
+>
+> **Decision added 2026-08-17:**
+> - **Phase 8 (QLoRA fine-tuning):** apply QLoRA (Unsloth, 4-bit NF4 + LoRA
+>   adapters) to `qwen3:1.7b` on synthetic planner trajectories, targeting the
+>   failure Phase 4 exposed (premature `create_reservation`; booking bucket
+>   44.4%). Runs after Phase 6/7. Hard integrity constraint: training data is
+>   generated independently of the 45 eval fixtures; the fixtures remain the
+>   untouched benchmark. See Phase 8.
 
 ---
 
@@ -33,9 +41,10 @@
 | 5 — Next.js frontend | ✅ done | `localhost:3000` chat UI + tool-trace panel |
 | 3 — Eval harness | ✅ done | 45 cases; **qwen3:4b = 42/45 (93.3%)** after bug-fix pass |
 | (bonus) Semantic search | ✅ done | Hybrid retrieval, in-memory embedding index |
-| **4 — Quant benchmark** | 🔄 **active** | **Pivoted to 1.7B vs 4B** — see §1 + Phase 4 |
-| 6 — README | ⬜ next | — |
+| 4 — Model comparison | ✅ done | 1.7B **71.1%** vs 4B **93.3%** → 4B selected; `reports/eval_summary.md` |
+| **6 — README** | 🔄 active | README + CLAUDE.md + docs rewritten & committed; UI screenshots + video pending |
 | 7 — Deploy | ⬜ later | — |
+| **8 — QLoRA fine-tune** | 🔄 **active** | Task 1 ✅ env gate passed (10-step train, peak 1.66 GiB/4 GiB); pipeline code being generated on second machine (branch `phase8-qlora`) |
 
 **4B eval headline:** started at **33%** (broken date normalization keystone +
 cancel/modify interceptor gaps), fixed in a targeted pass to **93.3%**. The 3
@@ -43,6 +52,13 @@ remaining failures: 1 minor real bug (B08 email-collection gap in Phase 2→3
 transition), 2 fixture/data issues (C06 over-strict expectation, C09 seed-data
 mismatch where 6:30pm is genuinely booked). See `EVAL_BUGS.md` (historical) and
 `reports/eval_qwen3_4b_20260810T071636Z.md` (latest).
+
+**Phase 4 result (2026-08-17):** `qwen3:1.7b` = **32/45 (71.1%)**; booking
+bucket collapsed to **44.4%** — dominant failure is premature
+`create_reservation` (skips `check_availability`) in 8 of 13 failed
+conversations. Cancel/modify = 9/9 on both models (interceptor-guarded paths
+are model-independent). **Decision: 4B is the floor.** Full comparison in
+`reports/eval_summary.md`; specs in `docs/model_specs.md`.
 
 ---
 
@@ -672,7 +688,98 @@ project done.
 
 ---
 
-## 3. Risks & honest limits
+## Phase 8 — QLoRA fine-tuning (added 2026-08-17, runs after Phase 7)
+
+**Status note (2026-08-17):** started ahead of Phase 7. Execution is split
+across two machines:
+- **Machine A (second laptop, larger token budget):** generates the pipeline
+  CODE per a handoff spec — data generator, unit tests, training script,
+  GGUF export, held-out fixtures, `docs/FINE_TUNING.md`. Branch:
+  `phase8-qlora`. No training runs there.
+- **Machine B (4 GB GPU laptop, this repo):** environment setup (task 1),
+  then runs everything — data gen, training, export, ollama create, re-eval.
+  The handoff spec pins the integrity rule (generator independent of the 45
+  fixtures) and requires runtime formats be extracted from
+  `planner_agent.py`, never invented.
+
+**Goal:** raise the 1.7B planner's quality floor with QLoRA fine-tuning so the
+cheap model becomes viable — or document how far fine-tuning moves the floor.
+Either outcome is a defensible finding.
+**Exit criteria:** `reports/eval_summary.md` gains a fine-tuned-1.7B row
+measured on the SAME 45-fixture harness; the data generator + training config
+are committed; numbers are honest (no fixture contamination).
+**Estimate:** 10–20 h (environment friction is the wildcard).
+
+### Framing — what we can claim
+We **apply** QLoRA; Unsloth/PEFT/bitsandbytes implement it. The
+resume-defensible claim is the pipeline around it: synthetic trajectory
+generation from the state-machine spec, 4-bit + LoRA training on a 4 GB GPU,
+GGUF/Ollama export, and before/after eval on an untouched benchmark.
+
+### Hard integrity constraint (non-negotiable)
+Training data is generated **synthetically** — a memory-state sampler +
+utterance templates + paraphrase variation — and must be independent of
+`tests/eval/conversations.yaml`. The 45 fixtures stay untouched as the
+benchmark. Add ~10 held-out conversations as a second, never-trained-on
+check. Training on the eval fixtures (or close paraphrases of them) would
+contaminate every before/after number this project reports.
+
+### Tasks
+1. **Environment.** ✅ done 2026-08-17 (native Windows — no WSL2 needed).
+   Dedicated `.venv-train`: torch 2.11.0+cu128, Unsloth 2026.8.18,
+   bitsandbytes 0.50.1, peft 0.20.0, transformers 5.5.0 — pinned in
+   `requirements-training.txt`. Gate passed via `scripts/smoke_qlora_env.py`:
+   10 training steps on Qwen3-1.7B-4bit with LoRA r=16 attached (17.4M
+   trainable params, 1.66%), loss 8.39 → 1.48, peak VRAM **1.66 GiB of
+   4.0 GiB** — comfortable fit. Two bring-up fixes worth remembering:
+   peft 0.20.0 has no `get_parameter_count()` (count `requires_grad`
+   manually), and transformers 5.x refuses to train without explicit
+   `labels` in the batch (no loss from `input_ids` alone).
+2. **Synthetic data generator** (`scripts/generate_training_data.py`):
+   - Sample conversation state: phase ∈ {1,2,3}, memory slots filled/missing,
+     seeded restaurant.
+   - Emit a user utterance from templates + paraphrase variation (the
+     cuisine/zone/date/party phrasings are already catalogued in the phase
+     prompts).
+   - Emit ground-truth planner JSON using the same rules the interceptors
+     encode (availability before booking, email required, etc.).
+   - Output: chat-format triples (system = phase prompt, user = utterance +
+     memory state, assistant = plan JSON), 1–5k examples, JSONL.
+3. **Train.** `qwen3:1.7b`, 4-bit NF4, LoRA r=16 (attention + MLP
+   projections), seq 2048, batch 1–2 + gradient accumulation, 1–3 epochs.
+   Training targets formatted exactly as the planner parses them (post
+   `think:false` strip, valid JSON).
+4. **Export + serve.** Merge adapters → GGUF Q4_K_M → `ollama create
+   goodfoods-planner` from a Modelfile. Same runtime path as every other
+   model — no special-casing in the agent.
+5. **Re-run the eval.** `python -m scripts.evaluate --model goodfoods-planner`.
+   Three-way comparison: base-1.7B / tuned-1.7B / 4B. Also run the ~10
+   held-out conversations and report them separately.
+6. **Write up.** Extend `reports/eval_summary.md` (new row + commentary),
+   patch the README model-comparison section, update this file's status
+   table.
+
+### Hardware notes
+- 1.7B QLoRA fits the 4 GB VRAM (quantized base + adapter gradients +
+  optimizer state). 4B QLoRA does not fit — 1.7B is the training target by
+  necessity, which is also the story: *recover the cheap model*.
+- Success bar: tuned-1.7B booking bucket materially above the base 44.4%
+  (stretch: approach the 4B's 77.8%) while search/edge/cancel buckets hold.
+  If held-out numbers lag fixture numbers, the write-up says so plainly.
+
+### Risks
+- bitsandbytes/Unsloth on native Windows — WSL2 was the fallback; **not
+  needed**, the stack runs natively (task 1 gate).
+- Overfit to template phrasing — mitigate with paraphrase variety + held-out
+  conversations; disclose any fixture-vs-held-out gap.
+- Output-format drift (think preamble, JSON quirks) — targets must match the
+  exact parse path (`strip_model_reasoning` → JSON).
+
+### Approval gate
+Review of the generator's sample output + training config BEFORE the real
+run; review of the three-way comparison table before the README patch.
+
+---
 
 - **4B may be too weak for Phase 2 edge cases.** Phase 3 surfaced this — and
   the 4B result was 93.3%, so the concern was largely unfounded. The remaining
@@ -680,7 +787,13 @@ project done.
 - **1.7B may collapse on multi-step booking flows.** That's the hypothesis
   Phase 4 tests. If 1.7B's bucket-C (booking) accuracy drops sharply, the
   finding is real and defensible: model-size selection matters, and the
-  cost/quality knee is measurable. Do not hide it.
+  cost/quality knee is measurable. Do not hide it. *(Update 2026-08-17: it
+  did — booking 44.4%. See `reports/eval_summary.md`.)*
+- **Phase 8 (QLoRA) could contaminate the benchmark if rushed.** The 45
+  fixtures are the project's honesty anchor; training on them (or close
+  paraphrases) invalidates every before/after number. Synthetic-only training
+  data + held-out conversations are mandatory, and any fixture-vs-held-out
+  gap gets disclosed in the write-up.
 - **Phase 3 estimate (10–14 h) is the wildcard.** Writing 45 realistic
   multi-turn fixtures (up from 40 to cover cancel/modify bucket E) is the
   single biggest time sink in this plan. If time is tight, cut to 30 cases

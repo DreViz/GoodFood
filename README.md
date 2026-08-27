@@ -2,8 +2,9 @@
 
 A natural-language concierge for restaurant reservations. Users chat in plain
 English to discover restaurants, check live availability, and book, modify, or
-cancel a table — powered by a **two-agent LLM architecture** running on a
-**local model** (Ollama · qwen3), a **FastAPI** backend, and a **Next.js** chat UI.
+cancel a table — powered by a **two-agent LLM architecture** whose planner is a
+**QLoRA-fine-tuned qwen3** running locally (Ollama), with a **FastAPI** backend
+and a **Next.js** chat UI.
 
 <p>
   <img alt="Python" src="https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white">
@@ -65,7 +66,7 @@ flowchart LR
     end
 
     subgraph Services["Local services"]
-        OLLAMA[["Ollama<br/>qwen3:4b"]]
+        OLLAMA[["Ollama<br/>fine-tuned qwen3 planner"]]
         DB[("PostgreSQL<br/>JSONB")]
         MAIL[["SMTP · Gmail"]]
     end
@@ -281,6 +282,30 @@ docker compose up -d                                   # Postgres :5432, Ollama 
 docker exec goodfoods-ollama ollama pull qwen3:4b      # first-time model pull (~2.5 GB)
 ```
 
+<details>
+<summary><strong>Optional — build the fine-tuned planner instead</strong> (<code>goodfoods-planner</code>, the model the eval numbers below are measured on)</summary>
+
+The tuned planner is created locally, not pulled — a fresh clone runs the
+pipeline (full walkthrough in [`docs/FINE_TUNING.md`](docs/FINE_TUNING.md)):
+
+```bash
+python -m venv .venv-train && source .venv-train/bin/activate
+pip install -r requirements-training.txt
+
+python -m scripts.generate_training_data        # 3k synthetic conversations (seed 42)
+python -m scripts.train_planner_qlora           # ~2.7 h on a 4 GB GPU, peak ~3.9 GiB
+python -m scripts.merge_planner_lora            # merge LoRA -> 16-bit safetensors
+# convert with llama.cpp's convert_hf_to_gguf.py, then:
+ollama create goodfoods-planner --quantize q4_K_M -f Modelfile.goodfoods-planner
+
+echo "OLLAMA_MODEL=goodfoods-planner" >> .env    # swap it in
+```
+
+No GPU? The stock `qwen3:4b` works everywhere in this README and scores 93.3%
+on the same eval — the tuned 1.7B (91.1%, 1.1 GB, fully GPU-resident) is the
+size-efficiency play.
+</details>
+
 ### 2. Backend
 
 ```bash
@@ -311,8 +336,8 @@ npm run dev                                            # http://localhost:3000
 ### Quick checks (no UI)
 
 ```bash
-python -m scripts.smoke_test --model qwen3:4b          # scripted search → availability → booking
-python -m scripts.evaluate --model qwen3:4b            # full 45-conversation eval
+python -m scripts.smoke_test --model goodfoods-planner # scripted search → availability → booking
+python -m scripts.evaluate --model goodfoods-planner   # full 45-conversation eval
 pytest tests/retrieval                                 # semantic-rank + fallback tests
 ```
 
@@ -326,7 +351,7 @@ local default. See `.env.example`.
 | Variable | Default | Purpose |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama server |
-| `OLLAMA_MODEL` | `qwen3:4b` | model tag |
+| `OLLAMA_MODEL` | `qwen3:4b` | model tag — set `goodfoods-planner` to use the fine-tuned planner |
 | `OLLAMA_THINK` | `false` | qwen3 reasoning toggle |
 | `OLLAMA_TIMEOUT` | `180` | per-request timeout (s) |
 | `DATABASE_URL` | `postgresql://postgres:postgres@localhost:5432/goodfoods` | Postgres DSN |
@@ -399,11 +424,13 @@ Cancel/modify operate on the customer's most recent `confirmed` reservation
 
 ## Roadmap
 
+- ✅ **QLoRA fine-tuning (Phase 8)** — done. The 1.7B planner went
+  71.1% → 91.1% on the untouched 45-case eval (booking 44% → 78%), matching
+  the 4B's failure profile at 60% of its size. Details in
+  [Model selection](#model-selection--the-4-gb-question) and
+  [`docs/FINE_TUNING.md`](docs/FINE_TUNING.md).
 - 🚀 **Deployment (Phase 7)** — Vercel UI + containerized API + recorded demo,
   with a documented bring-your-own-local-Ollama path.
-- 🎓 **QLoRA fine-tuning (Phase 8)** — fine-tune the 1.7B planner on synthetic
-  trajectories (4-bit NF4 + LoRA, Unsloth) to test how far the model-size floor
-  can be pushed. Training data generated independently of the eval fixtures.
 - 🍽️ Product ideas — menu browsing and pre-ordering, seat-map visualization,
   richer vibe filters.
 

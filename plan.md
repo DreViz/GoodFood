@@ -32,7 +32,7 @@
 
 ---
 
-## Current status (2026-08-10)
+## Current status (2026-08-22)
 
 | Phase | Status | Result |
 |---|---|---|
@@ -44,7 +44,7 @@
 | 4 — Model comparison | ✅ done | 1.7B **71.1%** vs 4B **93.3%** → 4B selected; `reports/eval_summary.md` |
 | **6 — README** | 🔄 active | README + CLAUDE.md + docs rewritten & committed; UI screenshots + video pending |
 | 7 — Deploy | ⬜ later | — |
-| **8 — QLoRA fine-tune** | 🔄 **active** | Task 1 ✅ env gate passed (10-step train, peak 1.66 GiB/4 GiB); pipeline code being generated on second machine (branch `phase8-qlora`) |
+| **8 — QLoRA fine-tune** | ✅ **done** (2026-08-22) | Tuned 1.7B = **91.1%** (base 71.1%, 4B 93.3%); booking 44.4%→77.8%; premature-booking failure eliminated; held-out 9/10. Served as `goodfoods-planner` (Q4_K_M, 1.1 GB, 100% GPU) |
 
 **4B eval headline:** started at **33%** (broken date normalization keystone +
 cancel/modify interceptor gaps), fixed in a targeted pass to **93.3%**. The 3
@@ -59,6 +59,15 @@ bucket collapsed to **44.4%** — dominant failure is premature
 conversations. Cancel/modify = 9/9 on both models (interceptor-guarded paths
 are model-independent). **Decision: 4B is the floor.** Full comparison in
 `reports/eval_summary.md`; specs in `docs/model_specs.md`.
+
+**Phase 8 result (2026-08-22):** QLoRA-tuned 1.7B (`goodfoods-planner`) =
+**41/45 (91.1%)**, turns 94.2%; booking 44.4% → **77.8%** (= 4B),
+availability 66.7% → 88.9% (= 4B), edge → 100% (= 4B). The premature-booking
+failure mode is eliminated; the failure set is the 4B's three + one synonym
+gap (A05). Held-out 10: **9/10** — no memorization artifact. Served via
+`Modelfile.goodfoods-planner` (Q4_K_M, 1.1 GB, fully GPU-resident, ~1.6×
+faster than base 1.7B through the harness). Swap in with
+`OLLAMA_MODEL=goodfoods-planner`.
 
 ---
 
@@ -736,6 +745,12 @@ contaminate every before/after number this project reports.
    manually), and transformers 5.x refuses to train without explicit
    `labels` in the batch (no loss from `input_ids` alone).
 2. **Synthetic data generator** (`scripts/generate_training_data.py`):
+   ✅ run 2026-08-21, reviewed at the approval gate. 3.0k conversations
+   (2.8k train / 152 val, seed 42; buckets: availability 1500, booking 600,
+   discovery 600, edge 300; 31 case types; reply/execute 33/67). Output in
+   `data/planner_train.jsonl` + `data/planner_train_val.jsonl`, manifest in
+   `data/manifest.json`. Integrity verified: AST independence test +
+   zero-overlap-with-fixtures test (`tests/training/`, 45 tests green).
    - Sample conversation state: phase ∈ {1,2,3}, memory slots filled/missing,
      seeded restaurant.
    - Emit a user utterance from templates + paraphrase variation (the
@@ -745,19 +760,35 @@ contaminate every before/after number this project reports.
      encode (availability before booking, email required, etc.).
    - Output: chat-format triples (system = phase prompt, user = utterance +
      memory state, assistant = plan JSON), 1–5k examples, JSONL.
-3. **Train.** `qwen3:1.7b`, 4-bit NF4, LoRA r=16 (attention + MLP
-   projections), seq 2048, batch 1–2 + gradient accumulation, 1–3 epochs.
-   Training targets formatted exactly as the planner parses them (post
-   `think:false` strip, valid JSON).
-4. **Export + serve.** Merge adapters → GGUF Q4_K_M → `ollama create
-   goodfoods-planner` from a Modelfile. Same runtime path as every other
-   model — no special-casing in the agent.
-5. **Re-run the eval.** `python -m scripts.evaluate --model goodfoods-planner`.
-   Three-way comparison: base-1.7B / tuned-1.7B / 4B. Also run the ~10
-   held-out conversations and report them separately.
-6. **Write up.** Extend `reports/eval_summary.md` (new row + commentary),
-   patch the README model-comparison section, update this file's status
-   table.
+3. **Train.** ✅ done 2026-08-21 (`.venv-train`, `scripts/train_planner_qlora.py`).
+   unsloth/Qwen3-1.7B 4-bit NF4 + LoRA r=16 on 7 projections (17.4M params,
+   1.66%), seq 4096, 356 steps (~1.2 epochs effective), ~2.7 h wall,
+   peak VRAM ~3.9 GiB / 4.0. Loss: train 0.955 → 0.005, val 0.046 → 0.0094,
+   monotonic — no overfitting signal. Adapter: `adapters/planner_lora/`
+   (69.8 MB; back it up — gitignored).
+4. **Export + serve.** ✅ done 2026-08-22. Compiler-free chain:
+   `scripts/merge_planner_lora.py` (Unsloth merge → 16-bit safetensors in
+   `gguf/_merged_fp16/`) → llama.cpp `convert_hf_to_gguf.py` (pure Python)
+   → F16 GGUF (3.44 GB) → `ollama create goodfoods-planner --quantize q4_K_M`
+   → **1.1 GB**, fully GPU-resident. Two serving bugs found & fixed en
+   route: (a) `generation_config.json` sampling keys produce an invalid
+   GGUF KV type for Ollama — strip them before conversion; (b) the Modelfile
+   TEMPLATE must pre-fill the empty `<think>` block (the trainer's
+   `enable_thinking=False` ChatML rendering includes it; without the
+   pre-fill, `format:"json"` collides with the model's think compulsion and
+   output collapses to `{}`).
+5. **Re-run the eval.** ✅ done 2026-08-22. Main 45-fixture:
+   **41/45 = 91.1%** conversations (base 1.7B: 71.1%; 4B: 93.3%),
+   97/103 turns (94.2%). Booking 44.4% → **77.8%** (= 4B), availability
+   66.7% → 88.9% (= 4B), edge 66.7% → 100% (= 4B); the availability-skipping
+   premature-booking failure mode is eliminated. Failure set = the 4B's three
+   (B08, C06, C09) + one synonym gap (A05: "terrace" not normalized to
+   "outdoor seating"). Held-out 10: **9/10** (25/26 turns) — consistent, no
+   memorization artifact; the one miss is trailing ", then" leaking into the
+   restaurant arg (H02). Reports: `eval_goodfoods-planner_20260822T*.md`.
+6. **Write up.** ✅ done 2026-08-22 — `reports/eval_summary.md` rewritten as
+   the three-way comparison (+20.0 pts; converged failure profile), README
+   model section patched, this table updated.
 
 ### Hardware notes
 - 1.7B QLoRA fits the 4 GB VRAM (quantized base + adapter gradients +

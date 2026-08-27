@@ -5,7 +5,25 @@
       "Bash(\"app/.venv/Scripts/python.exe\" -c \"from app.agent.agent import process_user_query; print\\('agent.py imports OK'\\)\")",
       "Bash(\".venv/Scripts/python.exe\" -c \"from app.agent.agent import process_user_query; print\\('agent.py imports OK'\\)\")",
       "Bash(\".venv/Scripts/python.exe\" -c \"from app.api.main import app; print\\('FastAPI app loads OK'\\)\")",
-      "Bash(.venv/Scripts/python.exe -c ' *)"
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git stash *)",
+      "Bash(cp .claude/settings.local.json /tmp/settings.local.json.bak)",
+      "Bash(git checkout *)",
+      "Bash(python -m pytest tests/training -q)",
+      "Bash(python -m scripts.generate_training_data --n 20 --out data/smoke.jsonl --seed 7)",
+      "Bash(python *)",
+      "Bash(cmake --version)",
+      "Bash(where cl *)",
+      "Bash(awk '{print $1}')",
+      "Bash(git add *)",
+      "Bash(git check-ignore *)",
+      "Bash(nvidia-smi *)",
+      "Bash(.venv-train/Scripts/python.exe *)",
+      "Bash(ollama create *)",
+      "Bash(curl -sL -o /tmp/llamacpp.zip https://codeload.github.com/ggml-org/llama.cpp/zip/refs/heads/master)",
+      "Read(//tmp/**)"
     ]
   }
 }

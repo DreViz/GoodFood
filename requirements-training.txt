@@ -1,0 +1,26 @@
+# Phase 8 QLoRA training environment — install into a DEDICATED venv,
+# never into the app environment (the app uses CPU torch for
+# sentence-transformers; training needs the CUDA build).
+#
+#   python -m venv .venv-train
+#   .venv-train/Scripts/pip install -r requirements-training.txt
+#
+# Pinned to the exact versions that passed the task-1 smoke gate
+# (scripts/smoke_qlora_env.py: 10-step 4-bit train, peak 1.66 GiB / 4 GiB)
+# on RTX 3050 Laptop 4 GB, driver 592.00, Windows 11, Python 3.12.
+#
+# +cu128 torch wheels are not on PyPI for Windows — the extra index below
+# is what makes this file self-contained.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.11.0+cu128
+unsloth==2026.8.18
+unsloth_zoo==2026.8.12
+transformers==5.5.0
+peft==0.20.0
+bitsandbytes==0.50.1
+trl==0.24.0
+accelerate==1.14.0
+datasets==4.3.0
+xformers==0.0.35
+triton-windows==3.7.1.post27

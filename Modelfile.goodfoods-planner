@@ -6,10 +6,16 @@
 # Then swap the planner over with one env var:
 #   OLLAMA_MODEL=goodfoods-planner        (app/config.py)
 #
-# Base: unsloth/Qwen3-1.7B + the GoodFoods planner LoRA, merged and quantised
-# to Q4_K_M — the project's quantization floor (docs/model_specs.md).
+# Base: unsloth/Qwen3-1.7B + the GoodFoods planner LoRA. scripts/merge_planner_lora.py
+# merges the adapter to 16-bit safetensors; llama.cpp's convert_hf_to_gguf.py
+# (pure Python, no compiler) produces the F16 GGUF below; Ollama quantises at
+# create time:
+#   ollama create goodfoods-planner --quantize q4_K_M -f Modelfile.goodfoods-planner
+# Q4_K_M is the project's quantization floor (docs/model_specs.md). On a
+# machine with CMake + MSVC, scripts/export_planner_gguf.py produces the same
+# Q4_K_M GGUF directly; point FROM at gguf/goodfoods-planner-q4km.gguf instead.
 
-FROM ./gguf/goodfoods-planner-q4km.gguf
+FROM ./gguf/planner-f16.gguf
 
 # --- Sampling ---------------------------------------------------------------
 # app/agent/planner_agent.py sends no `options` block, so whatever is declared
@@ -35,11 +41,20 @@ PARAMETER stop "<|im_start|>"
 # ChatML, matching how the model was fine-tuned. The agent sends exactly one
 # system message (the phase prompt) and one user message (utterance + inline
 # context) per turn via /api/chat, which maps onto .System / .Prompt directly.
-# Reasoning is deliberately not enabled: the runtime sets think=false and
-# format=json, and the training targets are bare JSON with no <think> preamble.
+# The pre-filled empty <think> block is REQUIRED, not cosmetic: the trainer
+# rendered targets with Qwen3's enable_thinking=False template, which injects
+# exactly this block, so the model learned "assistant -> empty think -> JSON".
+# The runtime also sends format=json; without the pre-fill the JSON grammar
+# forces the first token to '{' while the model insists on emitting <think>
+# first, and the output collapses to '{}' (measured). This mirrors what
+# Ollama's stock qwen3 template does for think=false.
 TEMPLATE """<|im_start|>system
 {{ .System }}<|im_end|>
 <|im_start|>user
 {{ .Prompt }}<|im_end|>
 <|im_start|>assistant
+<think>
+
+</think>
+
 """

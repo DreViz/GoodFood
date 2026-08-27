@@ -157,32 +157,44 @@ unit-tested and must always pass.
 ## Model selection — the 4 GB question
 
 The hardware is a laptop with a **4 GB VRAM** GPU. That constraint decided the
-model strategy, and the eval harness measured it honestly
+model strategy, and the eval harness measured it honestly at every step
 ([full comparison](reports/eval_summary.md), [specs](docs/model_specs.md)):
 
-| | `qwen3:1.7b` (2.0B params) | `qwen3:4b` (4.0B params) |
-|---|---:|---:|
-| Conversations passed | 32/45 (71.1%) | **42/45 (93.3%)** |
-| Booking flows (hardest bucket) | **4/9 (44.4%)** | 7/9 (77.8%) |
-| Cancel/modify flows | 9/9 | 9/9 |
-| Throughput (warm) | **48.9 tok/s** | 22.3 tok/s |
-| GPU placement | **100% GPU** | 71% GPU / 29% CPU |
-| On-disk size | 1.4 GB | 2.5 GB |
+| | `qwen3:1.7b` | `goodfoods-planner` (QLoRA-tuned 1.7B) | `qwen3:4b` |
+|---|---:|---:|---:|
+| Conversations passed | 32/45 (71.1%) | **41/45 (91.1%)** | 42/45 (93.3%) |
+| Booking flows (hardest bucket) | **4/9 (44.4%)** | **7/9 (77.8%)** | 7/9 (77.8%) |
+| Availability flows | 6/9 (66.7%) | **8/9 (88.9%)** | 8/9 (88.9%) |
+| Cancel/modify flows | 9/9 | 9/9 | 9/9 |
+| GPU placement | **100% GPU** | **100% GPU** | 71% GPU / 29% CPU |
+| On-disk size | 1.4 GB | **1.1 GB** | 2.5 GB |
 
-The 1.7B is 2.2× faster and fully GPU-resident — but it **skips the availability
-step and fires premature booking attempts** in 8 of 13 failed conversations.
-That failure mode is disqualifying for a booking system, and no amount of
-Python guard-railing can force a model to choose a step it decided to skip.
-**Decision: `qwen3:4b` is the floor.** The quality/cost knee for multi-step
-tool-use planning sits between 2.0B and 4.0B parameters.
+The story is two measurements:
+
+1. **Phase 4 — the floor.** The base 1.7B is 2.2× faster and fully
+   GPU-resident — but it **skips the availability step and fires premature
+   booking attempts** in 8 of 13 failed conversations. That failure mode is
+   disqualifying for a booking system, and no amount of Python guard-railing
+   can force a model to choose a step it decided to skip.
+   **Decision: `qwen3:4b` is the floor.**
+2. **Phase 8 — moving the floor.** QLoRA fine-tuning (4-bit NF4 base + LoRA
+   r=16, 1.66% trainable) on 3k synthetic conversations generated from the
+   state-machine spec — zero overlap with the eval fixtures (test-enforced),
+   runtime format reproduced byte-for-byte. Result: **71.1% → 91.1%**,
+   booking 44.4% → 77.8%, availability 66.7% → 88.9%; the premature-booking
+   failure mode is eliminated and the tuned model's failure set is the 4B's
+   three plus one synonym gap. A disjoint 10-conversation held-out set scores
+   9/10 — no memorization artifact. Served as `goodfoods-planner`
+   (Q4_K_M, 1.1 GB, 100% GPU, faster than the base 1.7B through the harness);
+   swap in with `OLLAMA_MODEL=goodfoods-planner`.
 
 - **Quantization floor: `Q4_K_M`** — verified via `ollama show`; never lower.
 - The 4B's runtime footprint (weights + 8K-context KV cache ≈ 4.2 GB) exceeds
   the card, so Ollama offloads ~29% to CPU — disclosed, measured, documented.
 - **Reasoning disabled** (`think:false`): qwen3 still emits a short `</think>`
-  preamble, stripped in code before JSON/prose is used.
-- **Next (Phase 8):** QLoRA fine-tuning of the 1.7B on synthetic trajectories,
-  to test how far fine-tuning moves that floor.
+  preamble, stripped in code before JSON/prose is used. The tuned model's
+  serving template pre-fills the empty think block (the Modelfile documents
+  why — omitting it collapses JSON-grammar output to `{}`).
 
 ---
 
@@ -191,17 +203,17 @@ tool-use planning sits between 2.0B and 4.0B parameters.
 A re-runnable harness (`scripts/evaluate.py` + 45 multi-turn fixtures in
 `tests/eval/conversations.yaml`) scores **tool-call accuracy, slot-filling, and
 task completion** across five buckets: search, availability, booking, edge
-cases, cancel/modify. Both models ran the identical harness — same prompts,
+cases, cancel/modify. All models ran the identical harness — same prompts,
 same Python guards, same fixtures, same hardware.
 
-| Bucket | `qwen3:1.7b` | `qwen3:4b` |
-|---|---:|---:|
-| Search | 7/9 | **9/9** |
-| Availability | 6/9 | **8/9** |
-| Booking | 4/9 | **7/9** |
-| Edge cases | 6/9 | **9/9** |
-| Cancel/modify | **9/9** | **9/9** |
-| **Overall** | 32/45 (71.1%) | **42/45 (93.3%)** |
+| Bucket | `qwen3:1.7b` | tuned 1.7B | `qwen3:4b` |
+|---|---:|---:|---:|
+| Search | 7/9 | 8/9 | **9/9** |
+| Availability | 6/9 | **8/9** | **8/9** |
+| Booking | 4/9 | **7/9** | **7/9** |
+| Edge cases | 6/9 | **9/9** | **9/9** |
+| Cancel/modify | **9/9** | **9/9** | **9/9** |
+| **Overall** | 32/45 (71.1%) | 41/45 (91.1%) | **42/45 (93.3%)** |
 
 Two findings worth an interview:
 
@@ -209,9 +221,10 @@ Two findings worth an interview:
    keystone (planner said `"7:30pm"`, slots stored `"19:30"` — never matched) and
    cancel/modify interceptor gaps. Targeted fixes took it 33% → 93.3% — the eval
    paid for itself before the model comparison even ran.
-2. **Cancel/modify is 9/9 on both models.** Those flows are the most
+2. **Cancel/modify is 9/9 on every model.** Those flows are the most
    interceptor-guarded; deterministic Python paths are model-independent. The
-   quality delta between models lives almost entirely in *planning depth*.
+   quality delta between models lives almost entirely in *planning depth* —
+   which is also exactly what the fine-tune recovered.
 
 Reports live in `reports/` (per-run markdown + JSON); the summary is
 [`reports/eval_summary.md`](reports/eval_summary.md).
@@ -224,7 +237,7 @@ Reports live in `reports/` (per-run markdown + JSON); the summary is
 |---|---|---|
 | Frontend | Next.js 14, React 18, TypeScript, Tailwind, shadcn/ui | Vercel AI SDK v4 `useChat` |
 | Backend | FastAPI, Uvicorn | Pydantic schemas, CORS, SSE streaming |
-| LLM | Ollama · `qwen3:4b` (selected via [eval](#model-selection--the-4-gb-question)) | reasoning disabled for latency |
+| LLM | Ollama · `qwen3:4b` or QLoRA-tuned `goodfoods-planner` (selected via [eval](#model-selection--the-4-gb-question)) | reasoning disabled for latency |
 | Retrieval | sentence-transformers `all-MiniLM-L6-v2` | hybrid: SQL filters + cosine rank, ilike fallback |
 | Data | PostgreSQL 16 (SQLAlchemy) | JSONB columns for cuisines, hours, menu, tags |
 | Config | Pydantic `BaseSettings` (`app/config.py`) | single source of truth via `.env` |

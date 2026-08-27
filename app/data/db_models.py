@@ -36,7 +36,6 @@ class Restaurant(Base):
     contact = Column(JSONB, default={})
     tags = Column(JSONB, default=[])
 
-    # Relationship with Reservation
     reservations = relationship("Reservation", back_populates="restaurant", cascade="all, delete-orphan")
 
     __table_args__ = (UniqueConstraint("unit_name", "address", name="unique_restaurant_location"),)

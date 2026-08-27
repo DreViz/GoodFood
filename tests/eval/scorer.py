@@ -27,10 +27,6 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 
-# ---------------------------------------------------------------------------
-# Result types
-# ---------------------------------------------------------------------------
-
 @dataclass
 class CheckResult:
     """Outcome of a single atomic assertion."""
@@ -53,10 +49,6 @@ class TurnResult:
     def failed_check(self) -> Optional[CheckResult]:
         return next((c for c in self.checks if not c.passed), None)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _norm(value: Any) -> Any:
     """Normalise a scalar for case-insensitive comparison.
@@ -88,10 +80,6 @@ def _is_match(expected: Any, actual: Any) -> bool:
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
-# ---------------------------------------------------------------------------
-# Atomic per-turn scorers
-# ---------------------------------------------------------------------------
-
 def score_plan(expect: Dict[str, Any], response: Dict[str, Any]) -> CheckResult:
     """Verify the planner chose the expected high-level plan."""
     expected_plan = expect.get("plan")
@@ -99,8 +87,7 @@ def score_plan(expect: Dict[str, Any], response: Dict[str, Any]) -> CheckResult:
         return CheckResult("plan", False, f"invalid expected plan: {expected_plan!r}")
 
     tool_output = response.get("tool_output")
-    # The agent returns tool_output=None when the planner emitted plan=reply,
-    # and a dict when plan=execute.
+    # tool_output is None when plan=reply, a dict when plan=execute.
     actual_plan = "execute" if isinstance(tool_output, dict) else "reply"
 
     if actual_plan == expected_plan:
@@ -118,7 +105,6 @@ def score_action(expect: Dict[str, Any], response: Dict[str, Any]) -> CheckResul
     tool_output = response.get("tool_output") or {}
 
     if expected_action is None:
-        # Caller asked for plan=reply; nothing to check here.
         return CheckResult("action", True, "no action expected")
 
     actual_action = tool_output.get("action") if isinstance(tool_output, dict) else None
@@ -238,29 +224,21 @@ def score_memory_after(
     )
 
 
-# ---------------------------------------------------------------------------
-# Per-turn composite scorer
-# ---------------------------------------------------------------------------
-
 def score_turn(expect: Dict[str, Any], response: Dict[str, Any]) -> TurnResult:
     """Run all relevant per-turn checks for one turn and aggregate."""
     checks: List[CheckResult] = []
 
-    # 1. plan is always required.
     checks.append(score_plan(expect, response))
 
     expected_plan = expect.get("plan")
 
-    # 2. action only if execute.
     if expected_plan == "execute":
         checks.append(score_action(expect, response))
         checks.append(score_args_subset(expect, response))
 
-    # 3. reply_contains_any is optional; checked whenever declared.
     if expect.get("reply_contains_any"):
         checks.append(score_reply_contains_any(expect, response))
 
-    # 4. memory_after is optional; checked whenever declared.
     if expect.get("memory_after"):
         checks.append(score_memory_after(expect, response))
 
@@ -271,10 +249,6 @@ def score_turn(expect: Dict[str, Any], response: Dict[str, Any]) -> TurnResult:
         reason="" if failed is None else f"{failed.name}: {failed.reason}",
     )
 
-
-# ---------------------------------------------------------------------------
-# Per-conversation outcome scorer
-# ---------------------------------------------------------------------------
 
 # Actions that mutate a reservation row. Used for `no_action` and
 # `booking_created` reasoning.
@@ -433,10 +407,6 @@ def score_outcome(ctx: ConversationContext) -> CheckResult:
 
     return CheckResult("outcome", False, f"unknown expected_outcome: {expected!r}")
 
-
-# ---------------------------------------------------------------------------
-# Convenience: extract customer_email from a conversation
-# ---------------------------------------------------------------------------
 
 def detect_customer_email(turns: List[Dict[str, Any]], user_messages: List[str]) -> Optional[str]:
     """Best-effort: prefer an email that appears in tool args, else scan user

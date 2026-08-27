@@ -1,5 +1,3 @@
-# app/agent/mock_llm.py
-
 def mock_planner_output(user_text: str):
     """
     Fallback response when Ollama is not running or planner fails.

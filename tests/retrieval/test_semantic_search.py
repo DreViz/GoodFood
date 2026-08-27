@@ -29,10 +29,6 @@ from app.retrieval.embeddings import (
     semantic_rank,
 )
 
-
-# ---------------------------------------------------------------------------
-# Fixtures + data loading
-# ---------------------------------------------------------------------------
 DATA_FILE = Path(__file__).resolve().parents[2] / "app" / "data" / "goodfoods_locations_unique_50.json"
 
 
@@ -81,9 +77,6 @@ def _relevant_ids(seed, *, tag=None, cuisine=None, zone=None):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Suite 1 — semantic rank quality
-# ---------------------------------------------------------------------------
 class TestSemanticRank:
     """Precision@5 + hit@5 + MRR on paraphrase + direct queries.
 
@@ -165,11 +158,10 @@ class TestSemanticRank:
         assert r["zone"] in doc
 
 
-# ---------------------------------------------------------------------------
-# Suite 2 — fallback (must ALWAYS pass; production guarantee)
-# ---------------------------------------------------------------------------
 class TestFallback:
-    """When embeddings are off / unavailable, search still answers via ilike."""
+    """When embeddings are off / unavailable, search still answers via ilike.
+
+    This suite must ALWAYS pass; it is the production guarantee."""
 
     def test_recommend_venues_returns_results_without_model(self, monkeypatch):
         # Force the model off — simulates a host where torch is broken.

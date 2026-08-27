@@ -17,7 +17,6 @@ class CustomerProfile(BaseModel):
     seating_preference: str | None = None
 
 
-# POST: Save or update customer profile
 @router.post("/profile", summary="Save or update customer profile")
 def save_customer_profile(data: CustomerProfile):
     session = SessionLocal()
@@ -64,7 +63,6 @@ def save_customer_profile(data: CustomerProfile):
         session.close()
 
 
-# GET: Retrieve customer profile by email
 @router.get("/{email}", summary="Get customer profile by email")
 def get_customer_by_email(email: str):
     session = SessionLocal()

@@ -14,9 +14,6 @@ class EmailRequest(BaseModel):
 
 @router.post("/send", summary="Send an email notification")
 def send_email_notification(data: EmailRequest):
-    """
-    Sends a test or custom email to a recipient.
-    """
     try:
         response = send_email(data.to, data.subject, data.message)
         return response

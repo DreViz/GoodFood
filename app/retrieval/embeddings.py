@@ -30,9 +30,7 @@ from app.data.db_models import Restaurant
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Module-level singletons (lazy + thread-safe)
-# ---------------------------------------------------------------------------
+# Lazy, thread-safe module-level singletons.
 _model = None
 _model_lock = threading.Lock()
 
@@ -41,9 +39,6 @@ _index: Optional[Tuple["object", List[int]]] = None  # matrix is np.ndarray
 _index_lock = threading.Lock()
 
 
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
 def _get_model():
     """Return a cached SentenceTransformer model, or ``None`` if unavailable.
 
@@ -83,9 +78,6 @@ def _get_model():
         return _model
 
 
-# ---------------------------------------------------------------------------
-# Document construction
-# ---------------------------------------------------------------------------
 def _join_list(value) -> str:
     """Flatten a JSONB list (or scalar) to a comma-joined string."""
     if value is None:
@@ -122,9 +114,6 @@ def restaurant_doc(r: Restaurant) -> str:
     return " ".join(parts)
 
 
-# ---------------------------------------------------------------------------
-# Index build / load
-# ---------------------------------------------------------------------------
 def build_restaurant_index(force: bool = False):
     """Build (or return cached) the embeddings matrix + location_id list.
 
@@ -151,7 +140,6 @@ def build_restaurant_index(force: bool = False):
         if _index is not None and not force:
             return _index
 
-        # 1) Load all restaurants from the DB.
         session = SessionLocal()
         try:
             rows = session.query(Restaurant).order_by(Restaurant.location_id).all()
@@ -164,7 +152,7 @@ def build_restaurant_index(force: bool = False):
 
         location_ids = [r.location_id for r in rows]
 
-        # 2) Try to restore a cache that matches the current row set.
+        # Restore a cache that matches the current row set.
         if not force:
             cached = _load_cache(settings.semantic_index_path)
             if cached is not None:
@@ -175,7 +163,6 @@ def build_restaurant_index(force: bool = False):
                     return _index
                 logger.info("[semantic] cache stale (row set changed); rebuilding.")
 
-        # 3) Embed fresh.
         docs = [restaurant_doc(r) for r in rows]
         try:
             import numpy as np  # type: ignore
@@ -189,7 +176,6 @@ def build_restaurant_index(force: bool = False):
             logger.warning("[semantic] embedding failed (%s); index not built.", e)
             return None
 
-        # 4) Persist.
         try:
             _save_cache(settings.semantic_index_path, location_ids, matrix)
         except Exception as e:  # pragma: no cover - best-effort persist
@@ -231,9 +217,6 @@ def _save_cache(path: str, location_ids: Sequence[int], matrix) -> None:
     np.save(path, payload, allow_pickle=True)
 
 
-# ---------------------------------------------------------------------------
-# Ranking
-# ---------------------------------------------------------------------------
 def semantic_rank(
     query_text: str,
     candidate_location_ids: Sequence[int],

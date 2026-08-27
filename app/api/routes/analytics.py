@@ -16,7 +16,6 @@ def analytics_summary():
 
         avg_rating = session.query(func.avg(Restaurant.rating)).scalar() or 0.0
 
-        # Just for demo: zones distribution
         zones = session.query(Restaurant.zone, func.count(Restaurant.zone)).group_by(Restaurant.zone).all()
         top_zones = sorted(zones, key=lambda z: z[1], reverse=True)[:3]
         zone_summary = [z[0] for z in top_zones]
@@ -52,7 +51,6 @@ def analytics_popular_cuisines():
 def analytics_seating_trends():
     session = SessionLocal()
     try:
-        # Fetch from customers table
         preferences = session.query(Customer.seating_preference, func.count(Customer.id)).group_by(Customer.seating_preference).all()
         results = [
             {"type": pref[0] or "Not specified", "count": pref[1]}

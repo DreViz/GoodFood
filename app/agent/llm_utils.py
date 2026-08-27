@@ -1,4 +1,3 @@
-# app/agent/llm_utils.py
 """
 Small shared helpers for talking to the Ollama LLM.
 

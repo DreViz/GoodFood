@@ -1,30 +1,14 @@
 #!/usr/bin/env python
-"""
-Phase 3 evaluation harness for the GoodFoods agent.
+"""Evaluation harness for the GoodFoods agent.
 
 Drives every conversation in tests/eval/conversations.yaml through the agent
-(in-process, the same way scripts/smoke_test.py does), scores each turn against
-its `expect` block with tests/eval/scorer.py, verifies the per-conversation
-expected_outcome against live DB state, and writes a JSON + Markdown report
-into reports/.
+(in-process, the same way scripts/smoke_test.py does), scores each turn with
+tests/eval/scorer.py, verifies expected_outcome against live DB state, and
+writes a JSON + Markdown report into reports/.
 
-Usage
------
-    python -m scripts.evaluate                              # default model
-    python -m scripts.evaluate --model qwen3:4b
-    python -m scripts.evaluate --model qwen3:8b --categories search,booking
-    python -m scripts.evaluate --reset-db --model qwen3:4b  # re-seed first
+    python -m scripts.evaluate --model qwen3:4b [--categories search,booking]
 
-Requires
---------
-    - A reachable Postgres (DATABASE_URL; defaults to the local compose DB).
-    - A reachable Ollama with the target model pulled.
-    - pyyaml installed (see requirements.txt).
-
-Outputs
--------
-    reports/eval_<model>_<UTC-timestamp>.json    — full machine-readable result
-    reports/eval_<model>_<UTC-timestamp>.md      — human-readable summary
+Requires a reachable Postgres and Ollama (with the model pulled), plus pyyaml.
 """
 from __future__ import annotations
 
@@ -42,10 +26,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="GoodFoods Phase 3 evaluation runner")
@@ -91,10 +71,6 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-# ---------------------------------------------------------------------------
-# Pretty printing
-# ---------------------------------------------------------------------------
-
 def _c(code, text):
     return f"\033[{code}m{text}\033[0m"
 
@@ -104,10 +80,6 @@ def yellow(t): return _c("93", t)
 def dim(t):    return _c("2", t)
 def bold(t):   return _c("1", t)
 
-
-# ---------------------------------------------------------------------------
-# DB helpers (seed + outcome probes)
-# ---------------------------------------------------------------------------
 
 def _resolve_restaurant(session, Restaurant, name: str):
     """Mirror dispatch_tool's restaurant resolution (ilike substring match)."""
@@ -266,10 +238,6 @@ def probe_seeded_modified(handle: dict, models, SessionLocal) -> bool:
         session.close()
 
 
-# ---------------------------------------------------------------------------
-# Per-conversation driver
-# ---------------------------------------------------------------------------
-
 def run_conversation(convo: dict, agent_module, memory, models, SessionLocal,
                      timeout_per_turn: float) -> dict:
     """Run one conversation end-to-end; return a structured result record."""
@@ -286,11 +254,10 @@ def run_conversation(convo: dict, agent_module, memory, models, SessionLocal,
     turns = convo.get("turns") or []
     expected_outcome = convo.get("expected_outcome")
 
-    # 1. Reset agent state so prior conversations don't bleed in.
+    # Reset agent state so prior conversations don't bleed in.
     memory.reset()
     agent_module.recent_results.clear()
 
-    # 2. Seed a reservation if the fixture asks for one.
     seeded_handle = None
     seed = convo.get("seed") or {}
     if seed.get("reservation"):
@@ -310,7 +277,6 @@ def run_conversation(convo: dict, agent_module, memory, models, SessionLocal,
 
     started_at_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
-    # 3. Drive each turn through process_user_query.
     turn_responses = []
     turn_results: list[TurnResult] = []
     user_messages = []
@@ -359,7 +325,6 @@ def run_conversation(convo: dict, agent_module, memory, models, SessionLocal,
         if elapsed > timeout_per_turn:
             print(yellow(f"    [{convo_id} T{idx}] slow turn: {elapsed:.1f}s"))
 
-    # 4. Per-conversation facts.
     final_memory = dict(memory.state)
     detected_email = detect_customer_email(turn_responses, user_messages)
 
@@ -389,13 +354,11 @@ def run_conversation(convo: dict, agent_module, memory, models, SessionLocal,
     )
     outcome_result = score_outcome(ctx)
 
-    # 5. Cleanup.
     if detected_email and expected_outcome == "booking_created":
         cleanup_created_reservations(detected_email, started_at_iso, models, SessionLocal)
     if seeded_handle:
         cleanup_seeded(seeded_handle, models, SessionLocal)
 
-    # 6. Compile record.
     all_turns_passed = all(t.passed for t in turn_results) and not conversation_aborted
     passed = all_turns_passed and bool(outcome_result) and not conversation_aborted
 
@@ -429,10 +392,6 @@ def run_conversation(convo: dict, agent_module, memory, models, SessionLocal,
         "aborted": conversation_aborted,
     }
 
-
-# ---------------------------------------------------------------------------
-# Aggregation + report writing
-# ---------------------------------------------------------------------------
 
 def aggregate_summary(records: list[dict]) -> dict:
     total = len(records)
@@ -524,7 +483,6 @@ def write_reports(records: list[dict], summary: dict, model: str,
             lines.append(f"- {tmark} **T{t['index']}** `{t['user']}`")
             if not t["passed"]:
                 lines.append(f"  - reason: {t['reason']}")
-                # surface the observed action/reply for quick triage
                 resp = t.get("response") or {}
                 to = resp.get("tool_output")
                 if isinstance(to, dict):
@@ -543,10 +501,6 @@ def write_reports(records: list[dict], summary: dict, model: str,
     return json_path, md_path
 
 
-# ---------------------------------------------------------------------------
-# Fixture selection
-# ---------------------------------------------------------------------------
-
 def select_conversations(all_convos: list[dict], args) -> list[dict]:
     if args.conversations:
         wanted = {c.strip() for c in args.conversations.split(",") if c.strip()}
@@ -556,10 +510,6 @@ def select_conversations(all_convos: list[dict], args) -> list[dict]:
         return [c for c in all_convos if c.get("category") in wanted_cats]
     return list(all_convos)
 
-
-# ---------------------------------------------------------------------------
-# DB reset (optional pre-step)
-# ---------------------------------------------------------------------------
 
 def reset_db_sequence() -> None:
     """Re-run the project's own seed scripts in order."""
@@ -574,10 +524,6 @@ def reset_db_sequence() -> None:
         if result.returncode != 0:
             raise RuntimeError(f"{step} exited {result.returncode}")
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
     args = parse_args(argv)
@@ -597,7 +543,7 @@ def main(argv=None) -> int:
     if args.reset_db:
         reset_db_sequence()
 
-    # App imports happen here (after model env var is set).
+    # App imports happen after the model env var is set.
     from app.config import get_settings
     from app.agent import agent as agent_module
     from app.agent.planner_agent import memory
@@ -619,7 +565,6 @@ def main(argv=None) -> int:
         print(yellow("No conversations matched the given filters."))
         return 0
 
-    # Header.
     print("=" * 72)
     print(f" GoodFoods eval  |  model={model_tag}  |  conversations={len(selected)}")
     print(f" endpoint={settings.ollama_generate_url}")

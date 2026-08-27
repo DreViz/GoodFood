@@ -1,4 +1,3 @@
-# app/agent/planner_agent.py
 import json
 import logging
 import requests
@@ -31,7 +30,8 @@ def load_prompt_for_phase(phase: str) -> str:
         return f.read()
 
 
-# Model, endpoint, timeout and think-mode all come from app.config.
+# Shared conversation state for the agent flow (the frontend resets it via
+# POST /agent/memory/reset). Model/endpoint settings come from app.config.
 memory = ConversationMemory()
 
 
@@ -123,12 +123,11 @@ def safe_extract_party_size(value):
 def safe_extract_date(value):
     """Normalize a user/LLM-supplied date to "YYYY-MM-DD", or None.
 
-    Previously this was a no-op `str(value).strip()`, so natural dates like
-    "tomorrow", "this friday", "18 Nov", "18/11" flowed into memory unchanged
-    and crashed slot_manager.parse_opening_hours (which only accepts ISO).
-    That single bug broke every booking conversation (EVAL_BUGS.md BUG-1).
-    All supported forms (relative terms, this/next <weekday>, DD Mon, Mon DD,
-    DD/MM, ISO) are handled by normalize_date_to_iso in date_utils.
+    Memory dates must always be ISO: slot_manager.parse_opening_hours only
+    accepts ISO, so letting "tomorrow" or "18 Nov" through crashes every
+    downstream availability check. All supported forms (relative terms,
+    this/next <weekday>, DD Mon, Mon DD, DD/MM, ISO) are handled by
+    normalize_date_to_iso in date_utils.
     """
     if not value:
         return None
@@ -162,16 +161,14 @@ _WORD_NUMBERS = {
 def extract_party_size_from_text(text: str):
     """Deterministically pull a party size (1-50) out of free-form user text.
 
-    Used by the Phase-2 collection guard and the manage-flow modify
-    interceptor, where we must know what the user said without trusting the
-    LLM's extraction. Handles:
+    Used by the collection guards and the modify interceptor, where we must
+    know what the user said without trusting the LLM's extraction. Handles:
 
       - digits: "for 4", "party of 8", "we are 5", "table for 4", "4 people"
       - words:  "table for two", "party of eight"
 
     Rejects 0, negatives, and out-of-range values (returns None) so it cannot
-    store a hallucinated/invalid size. This is the BUG-6 guard for the case
-    where the LLM strips a negative sign before the cleaner ever sees it.
+    store a hallucinated size.
     """
     if not text:
         return None
@@ -195,8 +192,8 @@ def extract_party_size_from_text(text: str):
     if m and _WORD_NUMBERS.get(m.group(1)) is not None:
         return _WORD_NUMBERS[m.group(1)]
 
-    # Digit forms. Reject any explicitly-negative token ("-3 people") so the
-    # BUG-6 guard sees None and re-asks, rather than the LLM's sign-stripped 3.
+    # Digit forms. Reject an explicitly-negative token ("-3 people") outright
+    # so the guard re-asks instead of storing the LLM's sign-stripped 3.
     if re.search(r"-\s*\d+\s*(?:people|guests?|persons?|pax)", t):
         return None
     m = re.search(
@@ -217,10 +214,9 @@ def extract_party_size_from_text(text: str):
 def _is_text_negative_party(text: str) -> bool:
     """True when the user explicitly wrote an invalid party count (negative or zero).
 
-    qwen3:4b normalizes "-3" to "3" before the planner's cleaner runs, so
-    safe_extract_party_size cannot catch it. This text-level scan is the
-    BUG-6 guard. Also catches explicit "0 people" (D03): zero is not a valid
-    party size, and the model produces unparseable JSON on such input — so we
+    The LLM normalizes "-3" to "3" before the cleaner ever sees it, so the
+    raw text is the only reliable place to catch it. Zero is equally invalid,
+    and the model tends to produce unparseable JSON on such input — so we
     intercept before the LLM round-trip.
     """
     if not text:
@@ -235,10 +231,10 @@ def _is_text_negative_party(text: str) -> bool:
     return False
 
 
-# Cuisines present in the seed data + common synonyms the eval exercises.
-# Used by the discovery-phase filter accumulator so that a cuisine mentioned
-# on a REPLY turn (where the planner emits no args) still persists to memory
-# for the next turn's carry-over (A04-T2).
+# Cuisines present in the seed data + common synonyms. Used by the
+# discovery-phase filter accumulator so a cuisine mentioned on a REPLY turn
+# (where the planner emits no args) still persists to memory for the next
+# turn's carry-over.
 _KNOWN_CUISINES = [
     "italian", "chinese", "american", "continental", "european", "tex-mex",
     "bbq", "pan-asian", "south indian", "andhra", "kerala",
@@ -262,13 +258,11 @@ def _extract_cuisine_from_text(text: str) -> Optional[str]:
     return None
 
 
-# --- Booking confirmation classification -------------------------------
-# Matches the confirmation phrases the eval exercises (C01-C09 T4/T5):
-#   "yes", "yep", "yes go ahead", "please confirm", "that's right, book it",
-#   "sounds good", "yep", "do it", "book it"
-# Explicitly rejects decline phrases so "actually, let me think about it"
-# (C07-T4) never matches. Also bounded to short messages (<=6 words) so
-# "yes, I want to change the time" cannot fire the create_reservation shortcut.
+# Booking confirmation classification. Matches affirmative openers ("yes",
+# "yep", "please confirm", "that's right, book it", "sounds good", "do it"),
+# explicitly rejects decline phrases ("actually, let me think about it" must
+# never match), and is bounded to short messages (<=6 words) so "yes, I want
+# to change the time" cannot fire the create_reservation shortcut.
 _CONFIRM_START = re.compile(
     r"^(?:yes|yep|yeah|sure|ok|okay|please|confirm|confirmed|go ahead|"
     r"book it|that'?s right|sounds good|sound(s)? good|do it|please do|"
@@ -306,10 +300,10 @@ def _is_booking_confirmation(text: str) -> bool:
 def extract_seating_pref(value):
     """Normalize a seating preference to "outdoor" or "indoor", or None.
 
-    The eval (C09) checks seating_pref == "outdoor", so we canonicalize to the
-    short form. Accepts the raw user phrase ("outdoor seating", "patio",
-    "indoor") or whatever the LLM emitted. Also used on free-text email turns
-    where the user pairs their email with a seating note ("sky@..., outdoor").
+    Canonicalizes to the short form the booking tool expects. Accepts the raw
+    user phrase ("outdoor seating", "patio", "indoor") or whatever the LLM
+    emitted. Also used on free-text email turns where the user pairs their
+    email with a seating note ("sky@..., outdoor").
     """
     if not value:
         return None
@@ -334,9 +328,8 @@ def strip_memory_if_unsupported(args):
         cleaned["restaurant"] = args["restaurant"]
 
     if "date" in args and args["date"]:
-        # Normalize to ISO so memory.date is always YYYY-MM-DD (BUG-1).
-        # safe_extract_date returns None for uninterpretable values, which
-        # means the field is dropped here and the collection guard re-asks.
+        # Uninterpretable dates return None here, the field is dropped, and
+        # the collection guard re-asks. Memory only ever stores ISO dates.
         d = safe_extract_date(args["date"])
         if d:
             cleaned["date"] = d
@@ -367,7 +360,7 @@ def strip_memory_if_unsupported(args):
 
     return cleaned
 
-# Main Planner Function
+
 def call_planner_llm(
     user_text: str,
     context: str = "",
@@ -378,7 +371,6 @@ def call_planner_llm(
     recent_results = recent_results or []
     customer_profile = customer_profile or {}
 
-    # merge memory into planner context (without mutating)
     planner_context = {
         "user_message": user_text,
         "recent_results": recent_results,
@@ -405,29 +397,22 @@ def call_planner_llm(
     logger.info("\n\n===== PLANNER PHASE: %s =====", current_phase)
     logger.info("===== FULL PROMPT SENT TO LLM =====\n%s", full_prompt)
 
-    # =====================================================================
-    # PRE-LLM INTERCEPTORS
-    # Deterministic guards that fire before the LLM round-trip, covering
-    # decisions qwen3:4b + format=json + think=false makes unreliably:
-    #   1. Cancel/modify intent detection in Phase 1 (no Phase-1 prompt rule)
-    #   2. Manage-flow email capture -> get_booking_details
-    #   3. Booking confirmation short-circuit (LLM emits invalid JSON on "yes")
-    #   4. Cancel confirmation in manage flow
-    # Each returns a planner-shaped dict mirroring what the LLM would emit
-    # if it followed the prompt reliably. Skipping the round-trip here
-    # also keeps per-turn latency at ~0s for these covered cases.
-    # =====================================================================
+    # PRE-LLM INTERCEPTORS — deterministic guards that fire before the LLM
+    # round-trip, covering decisions the model makes unreliably under
+    # format=json + think=false (cancel/modify intent, manage-flow email
+    # capture, booking confirmation, modify extraction). Each returns a
+    # planner-shaped dict mirroring what the LLM would emit if it followed
+    # the prompt reliably — and skips the round-trip entirely, so these
+    # turns cost ~0 latency.
     _text_lower = user_text.strip().lower()
     _phase = memory.state.get("phase")
 
-    # (0) Bare restaurant-name guard — discovery. BUG-8 / B01-T1.
-    # qwen3:4b sometimes treats a bare brand name ("GoodFoods", "GoodFoods
-    # Grill") as ambiguous and replies asking to clarify, instead of emitting
-    # get_seating_labels. A07 ("GoodFoods Grill") already passes; this makes
-    # D05 ("GoodFoods") and B01-T1 deterministic too. Narrow by design: the
-    # whole message must be a short "GoodFoods[ <word>][ <word>]" token with NO
-    # filter / question / manage keywords, so it cannot swallow real searches
-    # ("Any Italian places?") or booking phrases.
+    # (0) Bare restaurant-name guard — discovery phase. The model sometimes
+    # treats a bare brand name ("GoodFoods", "GoodFoods Grill") as ambiguous
+    # and replies asking to clarify instead of emitting get_seating_labels.
+    # Narrow by design: the whole message must be a short "GoodFoods[ <word>]
+    # [<word>]" token with no filter / question / manage keywords, so it
+    # cannot swallow real searches ("Any Italian places?") or booking phrases.
     if _phase in (None, "", "discovery"):
         _bare = user_text.strip().lower()
         _bare = re.sub(r"[^\w\s]", " ", _bare).strip()
@@ -451,16 +436,13 @@ def call_planner_llm(
                 "args": {"restaurant": _name},
             }
 
-    # (1) Cancel/modify intent interceptor — Phase 1 -> Phase 3 manage.
-    # Phase-1 prompt has no rule for cancel/modify intent; without this
+    # (1) Cancel/modify intent interceptor — discovery -> booking manage.
+    # The Phase-1 prompt has no rule for cancel/modify intent; without this
     # guard the model falls through to failsafe or hallucinates a restaurant.
-    #
-    # BUG-2: scan for an inline email FIRST. Conversations E03-E09 open with
-    # "cancel booking for inline@example.com" — the email is right there, so
-    # asking "Which email?" wastes a turn and, worse, the next turn's text
-    # gets captured as the email. If an email is present, store it and emit
-    # get_booking_details directly; only fall back to "Which email?" when the
-    # email is genuinely missing (E01/E02).
+    # Scan for an inline email FIRST: "cancel booking for x@example.com" has
+    # the email right there, and asking "Which email?" wastes a turn (worse,
+    # the next turn's text gets captured as the email). Only ask when the
+    # email is genuinely missing.
     if _phase in (None, "", "discovery"):
         _manage_patterns = [
             r"\b(cancel|modify|change|update|view)\b.{0,30}\b(booking|reservation)\b",
@@ -491,11 +473,10 @@ def call_planner_llm(
                 "reply": "Which email is the reservation under?",
             }
 
-    # (2) Manage-flow email capture -> emit get_booking_details directly.
-    # The cancel/modify interceptor above set intent=manage and asked for
-    # email; on the next turn a bare email is the answer. The Phase-3
-    # prompt would otherwise loop on "Which email?" because it does not
-    # see the email in memory yet.
+    # (2) Manage-flow email capture -> get_booking_details directly.
+    # Guard (1) asked for the email; a bare email on the next turn is the
+    # answer. Without this the Phase-3 prompt loops on "Which email?" because
+    # the email never lands in memory.
     if (_phase == "booking"
             and memory.state.get("intent") == "manage"
             and not memory.state.get("customer_email")):
@@ -512,11 +493,11 @@ def call_planner_llm(
                 "args": {"customer_email": _email},
             }
 
-    # (3) Booking confirmation short-circuit — create flow only.
-    # C01 T4 "yes" regressed to invalid JSON / fallback. When all required
-    # booking fields are in memory and the user gives a strict affirmative,
-    # emit create_reservation directly. Excluded for intent=manage (where
-    # "yes" might mean "yes cancel" — handled by guard 4).
+    # (3) Booking confirmation short-circuit — create flow only. The model
+    # emits invalid JSON on a bare "yes"; when all required booking fields
+    # are in memory and the user gives a strict affirmative, emit
+    # create_reservation directly. Excluded for intent=manage, where "yes"
+    # might mean "yes cancel" (guard 4).
     if _phase == "booking" and memory.state.get("intent") in (None, "create"):
         _mem = memory.state
         _has_required = all([
@@ -547,9 +528,9 @@ def call_planner_llm(
                 },
             }
 
-    # (4) Cancel confirmation interceptor — manage flow.
-    # "yes cancel it" / "cancel please" should fire cancel_reservation
-    # without depending on the LLM to follow the Phase-3 cancel rule.
+    # (4) Cancel confirmation — manage flow. "yes cancel it" / "cancel
+    # please" fires cancel_reservation without depending on the model to
+    # follow the Phase-3 cancel rule.
     if (_phase == "booking"
             and memory.state.get("intent") == "manage"
             and memory.state.get("customer_email")):
@@ -563,17 +544,14 @@ def call_planner_llm(
                 "args": {"customer_email": memory.state.get("customer_email")},
             }
 
-    # (5) Manage-flow modify interceptor — booking + intent=manage + email known.
-    # After get_booking_details returns the user's reservation, the next turn
-    # supplies the modification ("change the time to 20:00", "make it 6 people").
-    # The Phase-3 prompt tells the model to "ask ONE modification detail first",
-    # which adds a needless round-trip and is unreliable on qwen3:4b. We
-    # deterministically extract the requested new value(s) and emit
-    # modify_reservation directly with the new_* arg names the tool expects
-    # (and that the eval scorer checks — EVAL_BUGS.md BUG-2 / BUG-5).
-    #
-    # Guarded by a change-keyword + an actual value so it CANNOT fire on
-    # "actually leave it as is" (E09) or a bare "yes" (handled above).
+    # (5) Manage-flow modify — booking + intent=manage + email known. After
+    # get_booking_details returns the reservation, the next turn supplies the
+    # modification ("change the time to 20:00", "make it 6 people"). The
+    # Phase-3 prompt would ask one clarifying question first — a needless
+    # round-trip the model also handles unreliably. Extract the requested
+    # value(s) deterministically and emit modify_reservation with the new_*
+    # arg names the tool expects. Guarded by a change-keyword plus an actual
+    # value so it cannot fire on "actually leave it as is" or a bare "yes".
     if (_phase == "booking"
             and memory.state.get("intent") == "manage"
             and memory.state.get("customer_email")):
@@ -603,10 +581,9 @@ def call_planner_llm(
                     "args": _mod_args,
                 }
 
-    # (6) Negative-party guard — availability phase. BUG-6.
-    # qwen3:4b normalizes "-3" to "3" before the planner's safe_extract_party_size
-    # sees it, so the cleaner can't catch it. Scan the raw text instead and ask
-    # the user to re-enter the party size.
+    # (6) Negative/zero party guard — availability phase. The model
+    # normalizes "-3" to "3" before the cleaner sees it; scan the raw text
+    # and ask the user to re-enter the party size.
     if _phase == "availability" and _is_text_negative_party(user_text):
         logger.info("===== NEGATIVE PARTY SIZE GUARD -> re-ask =====")
         return {
@@ -615,11 +592,10 @@ def call_planner_llm(
                      "Please enter a positive number.",
         }
 
-    # (7) Ambiguous-time guard — availability phase. BUG-9.
-    # "tomorrow at 7 or 8pm for 4" offers two times. The planner would otherwise
-    # pass "7 or 8pm" to check_availability, where it fails to match a slot and
-    # the user sees "couldn't check availability". Ask them to pick one. The
-    # pattern requires at least one am/pm anchor so "7 or 8 people" cannot match.
+    # (7) Ambiguous-time guard — availability phase. "tomorrow at 7 or 8pm"
+    # offers two times; passing "7 or 8pm" to check_availability matches no
+    # slot and the user sees a confusing error. The pattern requires at least
+    # one am/pm anchor so "7 or 8 people" cannot match.
     if _phase == "availability":
         _two_times = (
             re.search(r"\d{1,2}(?::\d{2})?\s*(?:am|pm)?\s*(?:or|/)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm)", _text_lower)
@@ -632,13 +608,11 @@ def call_planner_llm(
                 "reply": "Which time would you prefer? Please pick a single time.",
             }
 
-    # (8) Booking confirmation interceptor — booking phase.
-    # qwen3:4b sometimes fails to recognize confirmation phrases ("sounds good",
-    # "that's right, book it") as a "yes" and re-asks "Shall I confirm?" instead
-    # of calling create_reservation (C08-T4, C05-T4). Intercept deterministically:
-    # when all booking fields are present and the user's message is a short
-    # confirmation phrase, emit create_reservation directly — skipping the LLM
-    # round-trip entirely.
+    # (8) Booking confirmation — booking phase. Confirmation phrases other
+    # than a bare "yes" ("sounds good", "that's right, book it") sometimes
+    # get a "Shall I confirm?" re-ask instead of create_reservation. When all
+    # booking fields are present and the message matches the confirmation
+    # classifier, fire the booking directly.
     if _phase == "booking":
         _has_all_fields = all([
             memory.state.get("restaurant"),
@@ -666,31 +640,23 @@ def call_planner_llm(
 
     try:
         settings = get_settings()
-        # Use /api/chat (not /api/generate) so qwen3's chat template is applied
-        # — this is what makes `format: "json"` actually work. With the raw
-        # /api/generate path the chat template is skipped, qwen3 still reasons
-        # in plain text (~1800 tokens of preface before the JSON), and the
-        # planner takes ~75s/turn instead of ~3s.
+        # /api/chat (not /api/generate) so the model's chat template is
+        # applied — that is what makes `format: "json"` work. The JSON
+        # constraint also suppresses qwen3's reasoning preamble (it cannot
+        # emit a think paragraph if every token must keep the output valid
+        # JSON). Measured: ~75s/turn via the raw generate path -> ~3s here.
         #
-        # `format: "json"` constrains decoding to valid-JSON tokens only,
-        # which is what suppresses the reasoning preamble (qwen3 cannot emit
-        # a reasoning paragraph if every token must keep the output valid
-        # JSON). Measured: 75s -> 3s, decisions stay correct across all three
-        # phase prompts (verified for execute/reply across P1/P2/P3).
-        #
-        # Known limitation: cuisine-only Phase-1 inputs (rule: "ask for more
-        # filters") sometimes still execute a search, because the model can't
-        # reason through the AND-condition without thinking tokens. Documented
-        # as an eval finding rather than patched here.
+        # Known limitation: cuisine-only discovery inputs (rule: "ask for
+        # more filters") sometimes still execute a search — the model can't
+        # reason through the AND-condition without thinking tokens. The
+        # deterministic cuisine-only guard below covers it.
         system_content = PHASE_PROMPT
-        # CRITICAL: keep the user message text-first and the context JSON
-        # inline (single-line). With format=json + think=false, qwen3:4b
-        # treats any pretty-printed JSON in the prompt as a template to
-        # copy — earlier turns ended up echoing `{"phase": "discovery"}`
-        # verbatim instead of producing a planner decision. Inline JSON
-        # after the user text (with an explicit do-not-echo guard) breaks
-        # the copy pattern while still giving the model the values it
-        # needs for `memory.X` substitution.
+        # Keep the user message text-first and the context JSON inline
+        # (single-line). Pretty-printed JSON in the prompt gets treated as a
+        # template to copy — the model echoes `{"phase": "discovery"}` verbatim
+        # instead of producing a decision. Inline JSON after the user text
+        # breaks the copy pattern while still exposing the values needed for
+        # `memory.X` substitution.
         memory_inline = json.dumps(merged_context.get("memory", {}), ensure_ascii=False)
         results_inline = json.dumps(recent_results, ensure_ascii=False)
         profile_inline = json.dumps(customer_profile, ensure_ascii=False)
@@ -717,7 +683,6 @@ def call_planner_llm(
         r.raise_for_status()
         data = r.json()
 
-        #taking response from ollama
         raw_response = (
             data.get("message", {}).get("content")
             or data.get("response")
@@ -738,7 +703,7 @@ def call_planner_llm(
             depth = 0
             json_end = None
 
-            #logic to extract json from response bracket wise
+            # bracket-match the outermost JSON object
             for i in range(json_start, len(raw_response)):
                 if raw_response[i] == "{":
                     depth += 1
@@ -747,7 +712,6 @@ def call_planner_llm(
                     if depth == 0:
                         json_end = i
                         break
-            #slicing extra output from llm before and after json
             if json_end is not None:
                 candidate = raw_response[json_start:json_end + 1]
             else:
@@ -769,18 +733,13 @@ def call_planner_llm(
 
         candidate = re.sub(r"<([^>]+)>", r"\1", candidate)
 
-        # EARLY EMAIL CAPTURE (restricted to clear email-provision intents)
+        # EARLY EMAIL CAPTURE (create flow only — the manage flow is handled
+        # by pre-LLM guard 2). A matched email counts as "intended for
+        # capture" when (a) we're in booking phase waiting for one, or (b) an
+        # explicit intent keyword is present ("use X", "my email is X") —
+        # which covers email changes and out-of-phase provision.
         email_match = re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", user_text)
         lower_text = user_text.lower()
-        # Treat a matched email as "intended for capture" when:
-        #   (a) booking phase AND customer_email currently missing in memory
-        #       — the user is answering the standard "which email?" question,
-        #       so a bare email qualifies (no keyword needed); OR
-        #   (b) an explicit email-intent keyword is present
-        #       ("use X", "my email is X", etc.) — covers email changes /
-        #       out-of-phase provision.
-        # Pre-LLM guard (2) already handles the manage flow, so this branch
-        # only fires for the create flow.
         email_intent_regex = re.compile(r"\b(use|email is|my email|here is my email|here is|contact email|to create|to book|use email)\b")
         _in_booking_email_needed = (
             memory.state.get("phase") == "booking"
@@ -793,19 +752,15 @@ def call_planner_llm(
 
         if memory.state.get("phase") == "booking" and pure_email_intent:
             email = email_match.group(0)
-
-            # Save email
             memory.update_from_planner({"customer_email": email})
 
-            # Capture a seating preference mentioned alongside the email
-            # (C09 "sky@example.com, outdoor seating please"). Previously
-            # seating_pref was never stored on this path, so it never reached
-            # create_reservation and the C09 args_subset check failed.
+            # A seating preference often rides along with the email
+            # ("sky@example.com, outdoor seating please") — capture it now or
+            # it never reaches create_reservation.
             _sp = extract_seating_pref(user_text)
             if _sp:
                 memory.update_from_planner({"seating_pref": _sp})
 
-            # Check if all booking fields already exist
             mem = memory.state
             has_required = all([
                 mem.get("restaurant"),
@@ -814,24 +769,18 @@ def call_planner_llm(
                 mem.get("party_size"),
             ])
 
-            # If everything present → ask for confirmation directly
             if has_required:
                 return {"plan": "reply", "reply": "Shall I confirm your reservation now?"}
 
-            # Otherwise ask next missing field (time is highest priority missing in booking flow)
+            # time is the next missing field in the booking flow
             return {"plan": "reply", "reply": "What time should I book it for?"}
-        # END EARLY EMAIL CAPTURE
 
         validated = validate_planner_json(candidate)
         logger.info("===== VALIDATED PLANNER JSON =====\n%s", validated)
 
-        # BUG-5: canonicalize modify_reservation arg names.
-        # The tool's contract (and the eval scorer) uses new_date / new_time /
-        # new_party_size / new_seating_pref, but qwen3:4b often emits the bare
-        # field names (time/date/party_size). Rename bare -> new_* so the tool
-        # and scorer see consistent keys regardless of what the LLM produced.
-        # (modify_reservation already accepts both via kwargs, so this is purely
-        # about the args dict the orchestrator dispatches and the scorer reads.)
+        # The modify tool's contract uses new_date / new_time / new_party_size /
+        # new_seating_pref, but the model often emits the bare field names.
+        # Rename bare -> new_* so dispatch always sees consistent keys.
         if validated and validated.get("plan") == "execute" \
                 and validated.get("action") == "modify_reservation":
             _margs = validated.get("args", {}) or {}
@@ -845,14 +794,12 @@ def call_planner_llm(
                     _margs[_new] = _margs.pop(_bare)
             validated["args"] = _margs
 
-        # BUG-10: search -> check_availability re-route.
-        # Once a restaurant is selected (phase availability/booking), an
-        # availability-style user turn ("18 Nov for 4 people") sometimes makes
-        # qwen3:4b emit search_restaurants_by_filters with date/party_size in
-        # the args (B01-T2). That is the wrong tool, and dispatch would reject
-        # the unknown kwargs. Re-route it to check_availability using the
-        # already-selected restaurant plus whatever date/party/time we can pull
-        # from the emitted args or the user text.
+        # Once a restaurant is selected (availability/booking phase), an
+        # availability-style turn ("18 Nov for 4 people") sometimes still
+        # emits search_restaurants_by_filters with date/party_size in the args
+        # — the wrong tool, and dispatch would reject the unknown kwargs.
+        # Re-route to check_availability with the selected restaurant plus
+        # whatever date/party/time we can pull from the args or user text.
         if (validated
                 and validated.get("plan") == "execute"
                 and validated.get("action") == "search_restaurants_by_filters"
@@ -890,8 +837,7 @@ def call_planner_llm(
                 "args": _new_args,
             }
 
-        # SAFETY CHECKS (run BEFORE any memory updates)
-        # Helper to detect missing/invalid values robustly
+        # SAFETY CHECKS — all of these run BEFORE any memory update.
         def _is_missing(value):
             if value is None:
                 return True
@@ -919,7 +865,7 @@ def call_planner_llm(
                     missing.append("restaurant")
 
                 if missing:
-                    # Ask for the FIRST missing field (per your prompt rules)
+                    # Ask for the first missing field.
                     field = missing[0]
                     questions = {
                         "customer_email": "Which email should I use for the reservation?",
@@ -930,18 +876,12 @@ def call_planner_llm(
                     }
                     return {"plan": "reply", "reply": questions.get(field, "Could you confirm the missing details?")}
 
-        # PHASE-2 COLLECTION-ORDER GUARD (reply path) — BUG-3.
-        # In availability, qwen3:4b loses track of which fields memory already
-        # holds: it asks for a field it already has (B04: has party, asks "how
-        # many") or asks for the wrong one (B05: has date, asks "what date").
-        # When the model returns a REPLY here, deterministically extract any
-        # fields the user just stated, store them, then ask for the FIRST
-        # missing field in the fixed order [date, party_size].
-        #
-        # Excludes seating-option requests ("show seating") and slot picks
-        # ("7:30 works") so it cannot smother B07 / slot-pick transitions
-        # (those produce an EXECUTE, but we guard on keywords too in case the
-        # model replied).
+        # PHASE-2 COLLECTION-ORDER GUARD (reply path). In availability the
+        # model loses track of what memory already holds — it asks for a field
+        # it has, or asks for the wrong one. On a REPLY, extract any fields
+        # the user just stated, store them, then ask for the first missing
+        # field in the fixed order [date, party_size]. Seating-option requests
+        # and slot picks are excluded so this cannot smother those flows.
         if (validated
                 and validated.get("plan") == "reply"
                 and memory.state.get("phase") == "availability"):
@@ -966,14 +906,11 @@ def call_planner_llm(
                     return {"plan": "reply",
                             "reply": "For how many guests should I check availability?"}
 
-        # PHASE-1 REPLY-PATH CARRY-OVER — BUG-4 (A04).
-        # PHASE-1 FILTER ACCUMULATOR — A04 enabler.
-        # On a cuisine-only turn, Phase-1 prompt makes the planner REPLY asking
-        # for more preferences. Replies carry no args, so the cuisine the user
-        # just stated is never stored. Then on the NEXT turn ("In South") the
-        # carry-over guard below finds memory.cuisine empty and can't fire.
-        # Fix: extract the cuisine from the user text now and persist it, so it
-        # survives into the next turn regardless of what the planner decided.
+        # PHASE-1 FILTER ACCUMULATOR. On a cuisine-only turn the prompt makes
+        # the planner REPLY asking for more preferences — and replies carry no
+        # args, so the cuisine the user just stated is never stored. The next
+        # turn ("In South") then finds memory.cuisine empty. Extract and
+        # persist the cuisine now, regardless of what the planner decided.
         if (validated
                 and validated.get("plan") == "reply"
                 and memory.state.get("phase") in (None, "", "discovery")
@@ -984,13 +921,12 @@ def call_planner_llm(
                 logger.info(f"===== DISCOVERY CUISINE ACCUMULATOR -> memory.cuisine={_cu} =====")
 
         # The execute-path carry-over below already merges memory filters when
-        # the model emits a search. The residual A04 failure is the model
-        # REPLYING on T2 ("In South") instead of searching — qwen3:4b sometimes
-        # re-asks for preferences even after the user adds a second filter. This
-        # guard is deliberately pinched: it ONLY fires when memory already holds
-        # a cuisine, the model returned a reply, and the user's message is a
-        # short zone/area phrase. That shape is unique to A04-T2 among the eval
-        # cases, so it cannot regress A01/A02/A05/A08/A09.
+        # the model emits a search. The residual gap is the model REPLYING on a
+        # follow-up ("In South") instead of searching — it re-asks for
+        # preferences even after the user adds a second filter. This guard is
+        # deliberately pinched: it fires ONLY when memory already holds a
+        # cuisine, the model returned a reply, and the user's message is a
+        # short zone phrase.
         if (validated
                 and validated.get("plan") == "reply"
                 and memory.state.get("phase") in (None, "", "discovery")
@@ -1016,13 +952,12 @@ def call_planner_llm(
                     "args": _fargs,
                 }
 
-        # PHASE-1 NEAR-ME / VAGUE-ZONE GUARD — BUG-7 (A09).
-        # Phase-1 prompt maps "near me / around here / nearby" to a clarifying
-        # question, but qwen3:4b ignores that and emits a search with
-        # zone="near me" which then matches nothing. Intercept deterministically:
-        # if a discovery search carries a vague-zone value, ask for a real area
-        # instead of running the empty search. Runs before the cuisine-only guard
-        # so a cuisine + vague-zone (A09 "Italian near me") still clarifies.
+        # PHASE-1 NEAR-ME / VAGUE-ZONE GUARD. The prompt maps "near me /
+        # around here" to a clarifying question, but the model ignores it and
+        # emits a search with zone="near me", which matches nothing. If a
+        # discovery search carries a vague zone, ask for a real area instead
+        # of running the empty search. Runs before the cuisine-only guard so
+        # "Italian near me" still clarifies.
         if (validated
                 and validated.get("plan") == "execute"
                 and validated.get("action") == "search_restaurants_by_filters"
@@ -1037,13 +972,10 @@ def call_planner_llm(
                     "reply": "Which area would you like to dine in?",
                 }
 
-        # PHASE-1 CUISINE-ONLY GUARD
-        # qwen3:4b + format=json + think=false cannot reliably apply the
+        # PHASE-1 CUISINE-ONLY GUARD. The model cannot reliably apply the
         # "cuisine exists AND no other filters -> ask for more preferences"
-        # AND-condition (Phase-1 prompt rule, lines 82-83). Without thinking
-        # tokens the model sees cuisine and immediately fires a search. Enforce
-        # the rule deterministically here so A01/A04-turn-1 style inputs ask
-        # for additional filters instead of executing a one-filter search.
+        # AND-condition — without thinking tokens it sees a cuisine and
+        # immediately fires a one-filter search. Enforce the rule here.
         if (validated
                 and validated.get("plan") == "execute"
                 and validated.get("action") == "search_restaurants_by_filters"
@@ -1056,23 +988,21 @@ def call_planner_llm(
             }
             if _present == {"cuisine"}:
                 logger.info("===== PHASE-1 CUISINE-ONLY GUARD FIRED =====")
-                # Persist cuisine before returning so the next turn can build
-                # on it (A04 "I want Italian" -> "In South" must carry Italian
-                # forward; without this, T2 sees an empty memory).
+                # Persist the cuisine before returning so the next turn can
+                # build on it ("I want Italian" -> "In South" must carry the
+                # Italian forward).
                 if _args.get("cuisine"):
                     memory.update_from_planner({"cuisine": _args["cuisine"]})
                 return {
                     "plan": "reply",
                     "reply": "Would you like to add any other preferences such as area, budget, rating, or tags?",
                 }
-        # END PHASE-1 CUISINE-ONLY GUARD
 
-        # PHASE-1 FILTER CARRY-OVER
-        # When the user progressively reveals filters across turns, qwen3:4b
-        # + think=false often emits only the newly-mentioned filter, dropping
-        # ones already in memory. Merge memory filters into args so the
-        # search sees the full intent. Args already-present take precedence
-        # (user may be overriding a prior value).
+        # PHASE-1 FILTER CARRY-OVER. When the user progressively reveals
+        # filters across turns, the model often emits only the newly-mentioned
+        # one, dropping what memory already holds. Merge memory filters into
+        # the args; args already present take precedence (the user may be
+        # overriding a prior value).
         if (validated
                 and validated.get("plan") == "execute"
                 and validated.get("action") == "search_restaurants_by_filters"
@@ -1083,17 +1013,17 @@ def call_planner_llm(
                     _args[_filt] = memory.state[_filt]
             validated["args"] = _args
             logger.info("===== PHASE-1 FILTER CARRY-OVER: %s =====", validated["args"])
-        # END PHASE-1 FILTER CARRY-OVER
-        # END SAFETY CHECKS
 
-        # MEMORY UPDATES ONLY HERE
+        # Memory updates happen only past this point — every guard above
+        # runs before anything is persisted.
         phase = memory.state.get("phase")
 
         if validated and validated.get("plan") == "execute":
             action = validated.get("action")
             args = validated.get("args", {}) or {}
             cleaned = strip_memory_if_unsupported(args)
-            #  If Phase-2 and create_reservation has no email → ask for email instead of executing tool
+            # A create_reservation attempt in availability means the model
+            # skipped the email question — persist what we have and ask.
             if phase == "availability":
                 if action == "create_reservation" and cleaned.get("customer_email"):
 
@@ -1106,29 +1036,24 @@ def call_planner_llm(
                         "phase": "booking",
                     })
 
-                    # 2THEN ask for email
                     return {
                         "plan": "reply",
                         "reply": "Which email should I use for the reservation?"
                     }
 
 
-            # continue with your normal execution logic
-
             logger.info("===== EXECUTE ACTION DETECTED: %s =====", action)
             logger.info("===== EXECUTE ARGS ===== %s", args)
 
-            # normalize naming
+            # some models emit restaurant_name instead of restaurant
             if "restaurant_name" in args and "restaurant" not in args:
                 args["restaurant"] = args.pop("restaurant_name")
             validated["args"] = args
 
-            # FIELD-SAFETY CLEANING **(cleaned is created here!)**
-
             logger.info("===== CLEANED ARGS ===== %s", cleaned)
             logger.info("===== MEMORY BEFORE UPDATE ===== %s", memory.state)
 
-            # Once all fields are known, capture the email and ask for
+            # If all booking fields are known, capture the email and ask for
             # confirmation instead of firing get_booking_details.
             if action == "get_booking_details" and cleaned.get("customer_email"):
                 mem = memory.state
@@ -1139,7 +1064,6 @@ def call_planner_llm(
                     mem.get("party_size")
                 ])
                 if mem.get("phase") == "booking" and has_required:
-                    # Persist the provided email (we already cleaned it)
                     memory.update_from_planner({"customer_email": cleaned["customer_email"]})
                     # Ask for confirmation — do NOT call get_booking_details
                     return {"plan": "reply", "reply": "Shall I confirm your reservation now?"}
@@ -1163,12 +1087,11 @@ def call_planner_llm(
                 # runs. The orchestrator calls update_phase_after_check_availability()
                 # post-dispatch to advance phase=booking only when
                 # is_available=true. Transitioning blindly on `time` present
-                # sends unavailable-slot turns (D01) into the booking phase.
+                # would send unavailable-slot turns into the booking phase.
 
-                # PHASE-2 COLLECTION-ORDER GUARD (execute path) — BUG-3/D03.
                 # If check_availability fired but a required field is missing
-                # after cleaning (e.g. party_size=0 was rejected, or the model
-                # emitted the action prematurely), re-ask for the first missing
+                # after cleaning (e.g. party_size=0 was rejected, or the
+                # action fired prematurely), re-ask for the first missing
                 # field instead of dispatching a broken availability check.
                 if not memory.state.get("date"):
                     logger.info("===== PHASE-2 EXECUTE GUARD: ask date =====")
@@ -1179,7 +1102,6 @@ def call_planner_llm(
                             "reply": "For how many guests should I check availability?"}
 
             elif action == "create_reservation":
-                # Persist the booking fields carried over from the availability step.
                 payload = {"phase": "booking"}
 
                 if cleaned.get("restaurant") is not None:
@@ -1210,7 +1132,8 @@ def call_planner_llm(
 
             logger.info("===== MEMORY AFTER UPDATE ===== %s", memory.state)
 
-        # SAFETY FIX: never update memory on reply in phase 2
+        # Replies carry no user fields — only an explicit phase change is
+        # honored, never slot values.
         if validated and validated.get("plan") == "reply":
             args = validated.get("args", {}) or {}
             if args.get("phase"):
@@ -1225,13 +1148,12 @@ def call_planner_llm(
         if validated2:
             return validated2
 
-        # third attempt: retry the LLM with strict format enforcement.
-        # qwen3:4b + format=json sometimes still emits unparseable output
-        # despite the JSON constraint (edge cases in the grammar sampler).
-        # Rather than giving up with the generic fallback — which costs 5
-        # eval cases (A02, A05, B08-T3, C05-T4, D02-T3) — give the model one
-        # more shot with an explicit "your last response was invalid" warning.
-        # This recovers roughly half the would-be-failures.
+        # Third attempt: retry the LLM with strict format enforcement. The
+        # JSON constraint still lets unparseable output through occasionally
+        # (grammar-sampler edge cases). Rather than falling back to the
+        # generic reply, give the model one more shot with an explicit
+        # "your last response was invalid" warning — this recovers roughly
+        # half of the would-be failures.
         try:
             _retry_user = user_content + (
                 "\n\n=== FORMAT ERROR — READ CAREFULLY ===\n"
@@ -1260,8 +1182,7 @@ def call_planner_llm(
             ).strip()
             _retry_raw = strip_model_reasoning(_retry_raw)
 
-            # Extract JSON candidate from retry (bracket matching, same as
-            # the first-attempt flow).
+            # Bracket-match the retry output, same as the first attempt.
             _js = _retry_raw.find("{")
             if _js != -1:
                 _depth = 0
@@ -1298,7 +1219,6 @@ def call_planner_llm(
         return mock_planner_output(user_text)
 
 
-# POST-DISPATCH PHASE HOOK
 def update_phase_after_check_availability(tool_result: dict) -> None:
     """Advance memory.phase to "booking" iff check_availability confirmed the
     requested slot is available.

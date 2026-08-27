@@ -1,32 +1,17 @@
 # app/api/utils/date_utils.py
 """
-Shared date / time normalization for the GoodFoods agent.
-
-This module is the SINGLE source of truth for converting messy user-supplied
-date and time strings into the canonical forms the rest of the system expects:
+Shared date / time normalization: the single source of truth for converting
+messy user-supplied strings into canonical forms.
 
   dates -> "YYYY-MM-DD"   (consumed by slot_manager.parse_opening_hours)
-  times -> "HH:MM"        (24-hour, consumed by check_availability)
+  times -> "HH:MM", 24h   (consumed by check_availability)
 
-It is used by three layers (see EVAL_BUGS.md BUG-1):
-
-  1. planner_agent.safe_extract_date   -> normalize_date_to_iso
-  2. tool_calls._normalize_date        -> normalize_date_to_iso
-  3. slot_manager.get_available_slots  -> normalize_date_to_iso (defensive)
-
-And by the planner's deterministic interceptors:
-
-  - extract_date_from_text  / extract_time_from_text pull a value out of a
-    free-form user message (used by the Phase-2 collection guard and the
-    manage-flow modify interceptor).
-
-Design goals:
-  - No dependency on app.* (pure + stdlib + python-dateutil) so it stays
-    unit-testable in isolation, mirroring tests/eval/scorer.py.
-  - Day-first interpretation ("18/11" -> 18 Nov, NOT 11 Aug) because the user
-    base is India/+05:30 — explicitly called out in EVAL_BUGS.md.
-  - Always return a canonical string or None — never raise, never return a
-    half-parsed value. Callers treat None as "not understood".
+Design constraints:
+  - No dependency on app.* (stdlib + python-dateutil only) so it stays
+    unit-testable in isolation.
+  - Day-first interpretation ("18/11" -> 18 Nov) — the user base is India/+05:30.
+  - Always return a canonical string or None — never raise. Callers treat
+    None as "not understood".
 """
 
 from __future__ import annotations
@@ -40,13 +25,8 @@ try:
 except Exception:  # pragma: no cover - dateutil is in requirements.txt
     _dateutil_parser = None
 
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-# Weekday name -> weekday index (Monday=0). Handles full names and 3-letter
-# abbreviations; both are matched case-insensitively.
+# Weekday name -> weekday index (Monday=0); full names and abbreviations,
+# matched case-insensitively.
 WEEKDAYS = {
     "monday": 0, "mon": 0,
     "tuesday": 1, "tue": 1, "tues": 1,
@@ -73,10 +53,6 @@ MONTHS = {
     "december": 12, "dec": 12,
 }
 
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _today(today: Optional[datetime]) -> datetime:
     return today if today is not None else datetime.now()
@@ -112,10 +88,6 @@ def _safe_date(year: int, month: int, day: int, today: datetime) -> Optional[str
             return None
     return d.isoformat()
 
-
-# ---------------------------------------------------------------------------
-# Public: date normalization
-# ---------------------------------------------------------------------------
 
 def normalize_date_to_iso(value, today: Optional[datetime] = None) -> Optional[str]:
     """Normalize a date value to "YYYY-MM-DD" or return None.
@@ -186,20 +158,17 @@ def normalize_date_to_iso(value, today: Optional[datetime] = None) -> Optional[s
     if m:
         return _safe_date(now.year, MONTHS[m.group(1)], int(m.group(2)), now)
 
-    # 6) Numeric "DD/MM" or "DD-MM" (day-first — user base is India/+05:30).
-    #    The required separator means a bare number ("for 3 people") cannot
-    #    match here — the false-positive risk came only from dateutil's fuzzy
-    #    mode, which is deliberately not used (see note below).
+    # 6) Numeric "DD/MM" or "DD-MM" (day-first). The required separator means a
+    #    bare number ("for 3 people") cannot match here.
     m = re.search(r"\b(\d{1,2})[/-](\d{1,2})\b", text)
     if m:
         day, mo = int(m.group(1)), int(m.group(2))
         if 1 <= day <= 31 and 1 <= mo <= 12:
             return _safe_date(now.year, mo, day, now)
 
-    # No fuzzy fallback on purpose: dateutil.parse(..., fuzzy=True) treats a
-    # bare integer ("for 3 people" -> day 3) as a date, which corrupts the
-    # Phase-2 collection guard. The explicit rules above cover every form the
-    # eval exercises; anything else returns None and the caller re-asks.
+    # No fuzzy fallback on purpose: dateutil's fuzzy mode treats a bare integer
+    # ("for 3 people" -> day 3) as a date. Anything unmatched returns None and
+    # the caller re-asks.
 
     return None
 
@@ -207,20 +176,13 @@ def normalize_date_to_iso(value, today: Optional[datetime] = None) -> Optional[s
 def extract_date_from_text(text: str, today: Optional[datetime] = None) -> Optional[str]:
     """Pull a single date mention out of free-form user text.
 
-    Used by the planner's deterministic guards when the model produced a
-    `reply` but we still need to know whether the user just stated a date
-    (e.g. Phase-2 collection order, manage-flow modify interceptor).
-
-    Thin wrapper around normalize_date_to_iso — same rules, accepts raw text.
+    Used by the planner's deterministic guards; thin wrapper around
+    normalize_date_to_iso — same rules, accepts raw text.
     """
     if not text:
         return None
     return normalize_date_to_iso(text, today=today)
 
-
-# ---------------------------------------------------------------------------
-# Public: time normalization
-# ---------------------------------------------------------------------------
 
 def normalize_time(value) -> Optional[str]:
     """Normalize a time value to 24-hour "HH:MM" or return None.

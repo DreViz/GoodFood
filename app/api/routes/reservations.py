@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 # NOTE: no prefix here — main.py mounts this router with prefix="/reservations".
 router = APIRouter(tags=["Reservations"])
 
-# FASTAPI DB DEPENDENCY
 def get_db():
     db = SessionLocal()
     try:
@@ -20,7 +19,6 @@ def get_db():
         db.close()
 
 
-# MODELS
 class ReservationRequest(BaseModel):
     customer_email: EmailStr
     restaurant_id: int
@@ -44,7 +42,6 @@ class ReservationResponse(BaseModel):
         from_attributes = True
 
 
-# EMAIL
 def send_confirmation_email(customer_email, restaurant_name, data, customer_name):
     """Helper function for background email sending"""
     subject = f"GoodFoods Reservation Confirmed — {restaurant_name}"
@@ -65,17 +62,14 @@ def send_confirmation_email(customer_email, restaurant_name, data, customer_name
     send_email(customer_email, subject, body)
 
 
-# CREATE RESERVATION
 @router.post("/", summary="Create a new reservation (async email confirmation)")
 def create_reservation(data: ReservationRequest, background_tasks: BackgroundTasks):
     session = SessionLocal()
     try:
-        # Verify customer
         customer = session.query(Customer).filter_by(email=data.customer_email).first()
         if not customer:
             raise HTTPException(status_code=404, detail="Customer not found. Please save preferences first.")
 
-        # Verify restaurant
         restaurant = session.query(Restaurant).filter_by(id=data.restaurant_id).first()
         if not restaurant:
             raise HTTPException(status_code=404, detail="Restaurant not found.")
@@ -89,7 +83,6 @@ def create_reservation(data: ReservationRequest, background_tasks: BackgroundTas
         if data.time not in available_times:
             raise HTTPException(status_code=400, detail=f"Slot {data.time} is not available for this restaurant.")
 
-        # Create reservation
         reservation = Reservation(
             customer_id=customer.id,
             restaurant_id=restaurant.id,
@@ -103,7 +96,7 @@ def create_reservation(data: ReservationRequest, background_tasks: BackgroundTas
         session.commit()
         session.refresh(reservation)
 
-        # Cache values before closing session
+        # Detached-instance attributes must be read before the session closes.
         restaurant_name = restaurant.unit_name
         customer_name = customer.name
         customer_email = customer.email
@@ -120,7 +113,6 @@ def create_reservation(data: ReservationRequest, background_tasks: BackgroundTas
     finally:
         session.close()
 
-    # Send confirmation email asynchronously
     background_tasks.add_task(send_confirmation_email, customer_email, restaurant_name, data, customer_name)
 
     return {
@@ -134,7 +126,6 @@ def create_reservation(data: ReservationRequest, background_tasks: BackgroundTas
     }
 
 
-# FETCH ALL RESERVATIONS
 @router.get("/", response_model=List[ReservationResponse], summary="Fetch all reservations")
 def get_all_reservations(db: Session = Depends(get_db)):
     try:
@@ -146,7 +137,6 @@ def get_all_reservations(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 
-# FETCH BY CUSTOMER EMAIL
 @router.get("/{email}", response_model=List[ReservationResponse], summary="Fetch reservations by customer email")
 def get_reservations_by_email(email: str, db: Session = Depends(get_db)):
     try:

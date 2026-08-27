@@ -22,16 +22,12 @@ def _run_turn(message: str, context: str = ""):
 
 @router.post("/chat", response_model=ChatResponse, summary="Non-streaming agent chat")
 def chat(req: ChatRequest) -> ChatResponse:
-    """
-    One-shot chat turn returning the full reply. Used by the Phase 3 eval
-    harness and any client that does not want to stream.
-    """
+    """One-shot chat turn returning the full reply (no streaming)."""
     reply, tool_output, phase = _run_turn(req.message, req.context or "")
     return ChatResponse(reply=reply, tool_output=tool_output, phase=phase)
 
 
-# Vercel AI SDK data-stream protocol encoders
-# See docs/sse_protocol.md. Format:
+# Vercel AI SDK data-stream protocol encoders — see docs/sse_protocol.md. Format:
 #   0:"<json-string>"   text part
 #   8:<json-array>      message annotation (binds to the current assistant message)
 #   d:<json-object>     finish message part
@@ -51,16 +47,12 @@ def _finish_part(reason: str = "stop") -> str:
 @router.post("/chat/stream", summary="Streaming agent chat (Vercel AI SDK data-stream)")
 def chat_stream(req: ChatRequest):
     """
-    Streams the assistant reply in the Vercel AI SDK data-stream format:
-      - text parts (`0:`) carry the reply, whitespace-tokenised word-by-word;
-      - a message annotation (`8:`) carries the planner action/args/tool result
-        and the post-turn phase, bound to this assistant message — this is what
-        the Phase 5 tool-trace panel renders without a second round-trip;
-      - a finish part (`d:`) terminates the stream.
+    Streams the reply in the Vercel AI SDK data-stream format: text parts
+    (`0:`), a message annotation (`8:`) carrying the planner trace and phase
+    (rendered by the frontend tool-trace panel), then a finish part (`d:`).
 
     The turn is computed fully before streaming (the responder does not
-    token-stream from Ollama), so text chunking is cosmetic — matching the
-    prior behaviour.
+    token-stream from Ollama), so text chunking is cosmetic.
     """
     reply, tool_output, phase = _run_turn(req.message, req.context or "")
 

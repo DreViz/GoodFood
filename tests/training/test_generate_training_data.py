@@ -1,5 +1,4 @@
-"""
-Phase 8 — contract tests for the QLoRA training-data generator.
+"""Contract tests for the QLoRA training-data generator.
 
 No GPU, no network, no DB. Everything here runs on stdlib + PyYAML; the checks
 that need the live agent (the planner's JSON validator, date/time

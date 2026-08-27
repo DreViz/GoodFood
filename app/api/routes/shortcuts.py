@@ -1,9 +1,7 @@
 # app/api/routes/shortcuts.py
 """
-Direct (non-agent) shortcut endpoints over the tool layer (Phase 2 / WS2).
-
-These expose the same underlying tools the planner uses, but as clean,
-schema-validated HTTP endpoints for the frontend and the Phase 3 eval harness.
+Direct (non-agent) endpoints exposing the same tools the planner uses, for
+clients that want the behaviour without the LLM loop.
 """
 from fastapi import APIRouter, HTTPException
 

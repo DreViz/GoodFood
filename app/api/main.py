@@ -53,13 +53,10 @@ app.include_router(shortcuts.router, tags=["Shortcuts"])
 
 
 
-#  attach memory reset endpoint (called from frontend once per page refresh)
+# Called by the frontend on every page refresh so stale conversation state
+# doesn't leak into a new session.
 @app.post("/agent/memory/reset", tags=["Agent Memory"])
 def reset_conversation_memory():
-    """
-    Reset the in-memory conversation context.
-    Called once by the frontend when the page is refreshed.
-    """
     try:
         memory.reset()
         return {"ok": True, "message": " Conversation memory cleared successfully."}

@@ -1,15 +1,12 @@
-# Phase 8 task 1 gate: verify the QLoRA environment on this machine.
-#
-# Loads unsloth/Qwen3-1.7B-4bit, attaches LoRA adapters, and runs 10 training
-# steps on toy data. Exercises exactly what real training needs: CUDA torch,
-# 4-bit quantized load, adapter forward/backward, optimizer step, VRAM fit.
-# Exits 0 on success — that is the "environment is ready" signal.
+# Environment gate for QLoRA training on this machine: loads
+# unsloth/Qwen3-1.7B-4bit, attaches LoRA adapters, and runs 10 training steps
+# on toy data — CUDA torch, 4-bit load, forward/backward, optimizer, VRAM fit.
+# Exits 0 = environment ready.
 #
 # Run with the TRAINING venv, not the app environment:
 #   .venv-train/Scripts/python.exe -m scripts.smoke_qlora_env
 #
-# First run downloads ~1.2 GB of model weights from Hugging Face
-# (unsloth/Qwen3-1.7B-unsloth-bnb-4bit — verified public).
+# First run downloads ~1.2 GB of weights from Hugging Face.
 import sys
 
 

@@ -1,12 +1,9 @@
-"""
-Phase 8 — schema guard for tests/eval/heldout_conversations.yaml.
+"""Schema guard for tests/eval/heldout_conversations.yaml.
 
 The held-out set is run on a different machine, hours into a fine-tuning
-session. A typo there costs a whole eval cycle, so validate it here: schema,
-tool names, restaurant names, coverage, and the promise that it shares nothing
-with the 45-conversation benchmark.
-
-Everything runs offline — no DB, no model, no network.
+session, so a typo there costs a whole eval cycle. Validates schema, tool
+names, restaurant names, coverage, and independence from the 45-conversation
+benchmark. Runs offline — no DB, no model, no network.
 """
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# app/agent/responder_agent.py
 import json
 import logging
 import requests
@@ -9,17 +8,10 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# Configuration
-# Model, endpoint, timeout and think-mode all come from app.config
-# (single source of truth — see Settings / get_settings()).
-
-# Load responder system prompt
 RESPONDER_PROMPT_PATH = os.path.join(os.path.dirname(__file__), "responder_prompt.txt")
 with open(RESPONDER_PROMPT_PATH, "r", encoding="utf-8") as f:
     RESPONDER_PROMPT = f.read()
 
-
-# Helper Functions
 
 def normalize_reservation_error(error_text: str) -> str:
     """
@@ -62,7 +54,7 @@ def format_reservation_message(result: dict) -> str:
     """Format a user-friendly reservation confirmation or error message."""
 
     if result.get("ok"):
-        # Email was NOT sent
+        # reservation stands even when the email fails — say so explicitly
         if result.get("email_sent") is False:
             return (
                 f"Your reservation at {result['restaurant']} is confirmed for "
@@ -71,7 +63,6 @@ def format_reservation_message(result: dict) -> str:
                 "Would you like to update the email?"
             )
 
-        # Email SUCCESS
         return (
             f"Your reservation is confirmed at {result['restaurant']} on "
             f"{result.get('date')} at {result.get('time')}. "
@@ -79,7 +70,6 @@ def format_reservation_message(result: dict) -> str:
             "Would you like anything else?"
         )
 
-    # Reservation FAILURE
     friendly_error = normalize_reservation_error(result.get("error"))
     return (
         f"{friendly_error} "
@@ -89,7 +79,6 @@ def format_reservation_message(result: dict) -> str:
 
 
 
-# Main Responder Function
 def call_responder_llm(user_text: str, tool_output: dict) -> str:
     """
     Converts structured tool_output into a natural, conversational reply.
@@ -98,28 +87,17 @@ def call_responder_llm(user_text: str, tool_output: dict) -> str:
 
     logger.info(f"[RESPONDER] Received structured payload: {json.dumps(tool_output, indent=2, ensure_ascii=False)}")
 
-    # Special formatting for reservation messages
+    # reservation confirmations are formatted deterministically — no LLM
+    # round-trip for the one message that must never be wrong
     if tool_output.get("action") == "create_reservation":
         return format_reservation_message(tool_output.get("result", {}))
 
-    # Build the complete LLM prompt
-    prompt = (
-        f"{RESPONDER_PROMPT.strip()}\n\n"
-        f"User said: {user_text.strip()}\n"
-        f"Tool result (structured):\n{json.dumps(tool_output, indent=2, ensure_ascii=False)}\n\n"
-        "Write only the final user-facing message.\n"
-    )
-
-
     try:
         settings = get_settings()
-        # Use /api/chat + a strict JSON schema so the responder can't emit a
-        # reasoning preamble. qwen3 with think=false still reasons in plain
-        # text via /api/generate (no chat template applied) — the reasoning
-        # would saturate the response and the user-facing reply would be
-        # polluted. Forcing `{"reply": "<string>"}` via format=schema keeps
-        # decoding constrained to valid JSON tokens, which suppresses the
-        # reasoning phase entirely (same trick that works for the planner).
+        # /api/chat + a strict JSON schema so the responder cannot emit a
+        # reasoning preamble: forcing `{"reply": "<string>"}` via format=
+        # schema keeps decoding constrained to valid JSON tokens, which
+        # suppresses the reasoning phase entirely (same trick as the planner).
         # The reply text is then extracted from the parsed object.
         r = requests.post(
             settings.ollama_chat_url,
@@ -164,10 +142,9 @@ def call_responder_llm(user_text: str, tool_output: dict) -> str:
             if isinstance(obj, dict) and isinstance(obj.get("reply"), str):
                 cleaned = obj["reply"].strip()
         except Exception:
-            # If JSON parsing fails, fall back to stripping reasoning preamble.
+            # fall back to stripping a reasoning preamble
             cleaned = strip_model_reasoning(raw_content)
 
-        # Only minimal safety fallback
         if not cleaned or len(cleaned) < 2:
             cleaned = "I'm here to help — could you repeat that?"
 

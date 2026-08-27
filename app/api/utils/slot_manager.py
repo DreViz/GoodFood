@@ -16,7 +16,6 @@ def get_available_slots(location_id: int, date: str, party_size: int):
     """
     session = SessionLocal()
     try:
-        # --- Step 1: Validate & find restaurant ---
         location_id = int(location_id)
         restaurant = session.query(Restaurant).filter_by(location_id=location_id).first()
 
@@ -25,17 +24,14 @@ def get_available_slots(location_id: int, date: str, party_size: int):
             logger.warning(msg)
             return {"error": msg}
 
-        # --- Step 1b: Normalize the date to ISO (defensive) ---
-        # The planner's safe_extract_date already normalizes, but this layer is
-        # also reached by the /availability REST route and /search+/book
-        # shortcuts which bypass the planner. Normalize here too so a natural
-        # date ("tomorrow", "18 Nov", "18/11") never reaches parse_opening_hours
-        # and crashes its strict strptime (EVAL_BUGS.md BUG-1).
+        # Defensive normalization: the planner already normalizes, but this
+        # layer is also reached via REST routes that bypass it, and
+        # parse_opening_hours uses a strict strptime that crashes on natural
+        # dates like "tomorrow" or "18/11".
         iso = normalize_date_to_iso(date)
         if iso:
             date = iso
 
-        # --- Step 2: Parse opening hours for the given date ---
         slots = parse_opening_hours(restaurant.opening_hours, date)
         if not slots:
             msg = f"No slots found for {restaurant.unit_name} on {date} (possibly closed)"
@@ -44,7 +40,6 @@ def get_available_slots(location_id: int, date: str, party_size: int):
 
         available_slots = []
 
-        # --- Step 3: Check booked capacity for each slot ---
         for slot in slots:
             reservations = (
                 session.query(Reservation)
@@ -82,11 +77,10 @@ def get_available_slots(location_id: int, date: str, party_size: int):
         session.close()
 
 
-# --- Utility: Parse opening hours JSON into slot list ---
 def parse_opening_hours(opening_hours: dict, date_str: str):
     """
-    Parses the opening_hours JSON and returns a list of time slots (e.g. ['12:00', '12:30', ...]).
-    Handles weekday matching and fallback gracefully.
+    Parse the opening_hours JSON into a list of 30-minute time slots
+    (e.g. ['12:00', '12:30', ...]) for the given date's weekday.
     """
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")

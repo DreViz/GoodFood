@@ -1,54 +1,20 @@
 #!/usr/bin/env python
-"""
-Phase 8 — synthetic trajectory generator for QLoRA fine-tuning of the planner.
+"""Synthetic trajectory generator for QLoRA fine-tuning of the planner.
 
-WHAT THIS PRODUCES
-------------------
-A chat-format JSONL dataset that teaches a small model (qwen3:1.7b) the
-PROCEDURE the GoodFoods planner must follow — the 3-phase state machine —
-rather than any particular sentence. Each line is one single-turn planner
-decision:
+Produces a chat-format JSONL ({"messages": [system, user, assistant], "meta"})
+teaching the 3-phase planner procedure. Runtime fidelity is non-negotiable: the
+three parts must match what planner_agent.call_planner_llm sends Ollama at
+inference time — the raw phase-prompt file as system, build_user_content() as
+user, the decision as bare JSON with no <think> preamble — and the memory blob
+is serialised through the real ConversationMemory so key order matches
+production.
 
-    {"messages": [{"role": "system", ...},
-                  {"role": "user", ...},
-                  {"role": "assistant", ...}],
-     "meta": {...}}                        # ignored by the trainer
+Integrity: every utterance comes from the template banks in this file. Nothing
+is copied or adapted from tests/eval/conversations.yaml (or heldout) — those
+stay an untouched benchmark.
 
-RUNTIME FIDELITY (non-negotiable)
----------------------------------
-The three message parts are byte-identical in structure to what
-``app.agent.planner_agent.call_planner_llm`` sends to Ollama at inference time:
-
-  system    = the raw contents of ``app/agent/planner_prompt_phase{1,2,3}.txt``.
-              call_planner_llm does ``system_content = PHASE_PROMPT`` — the file
-              is used VERBATIM, there are no placeholders to fill.
-  user      = ``build_user_content()`` below, which reproduces the exact
-              f-string in call_planner_llm (user text first, then the inline
-              "--- Context (do not echo back) ---" block).
-  assistant = the planner decision as a bare JSON object, with NO <think>
-              preamble — runtime disables reasoning (``think: false`` +
-              ``format: "json"``) and strips any residue before parsing.
-
-The memory blob is serialised through the real ``ConversationMemory`` class, so
-None-valued keys and the Python-internal ``intent`` flag are dropped and key
-order matches production exactly.
-
-TRAINING-DATA INTEGRITY
------------------------
-Every utterance here comes from the template banks in this file, written from
-the phase-prompt rules. NOTHING is copied, paraphrased or adapted from
-``tests/eval/conversations.yaml`` — those 45 conversations (and the 10 in
-``tests/eval/heldout_conversations.yaml``) stay an untouched benchmark.
-
-USAGE
------
     python -m scripts.generate_training_data --n 3000 \
         --out data/planner_train.jsonl --val-split 0.05 --seed 42
-
-    python -m scripts.generate_training_data --n 20 --out data/smoke.jsonl
-
-Writes ``<out>``, ``<out-stem>_val.jsonl`` and ``manifest.json`` beside them.
-Runs on stdlib only (plus the repo's own stdlib-only memory module).
 """
 from __future__ import annotations
 
@@ -69,9 +35,7 @@ if str(REPO_ROOT) not in sys.path:
 # production byte-for-byte.
 from app.agent.conversation_memory import ConversationMemory  # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Runtime contract constants (mirrored from the agent — see docstring)
-# ---------------------------------------------------------------------------
+# Runtime contract constants — mirrored from the agent (see module docstring).
 
 AGENT_DIR = REPO_ROOT / "app" / "agent"
 SEED_DATA_PATH = REPO_ROOT / "app" / "data" / "goodfoods_locations_unique_50.json"
@@ -134,10 +98,6 @@ GROUP_WEIGHTS = {
     "edge": 0.10,
 }
 
-
-# ---------------------------------------------------------------------------
-# Runtime format builders
-# ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=None)
 def load_phase_prompt(phase: str) -> str:
@@ -208,10 +168,7 @@ def build_sample(case: Dict[str, Any]) -> Dict[str, Any]:
     return record
 
 
-# ---------------------------------------------------------------------------
-# Seed data (real entities so the model learns real names/zones/cuisines)
-# ---------------------------------------------------------------------------
-
+# Real entities from the seed JSON so the model learns real names/zones/cuisines.
 class SeedCorpus:
     """Restaurant names, zones, cuisines and tags pulled from the seed JSON."""
 
@@ -260,14 +217,10 @@ def load_seed_corpus() -> SeedCorpus:
     return SeedCorpus(rows)
 
 
-# ---------------------------------------------------------------------------
-# Template banks
-#
-# Written from the phase-prompt rules. Independent of tests/eval/*.yaml.
-# ---------------------------------------------------------------------------
+# Template banks: written from the phase-prompt rules, independent of
+# tests/eval/*.yaml.
 
-# --- dates ---------------------------------------------------------------
-# (user phrasing, is_relative). Only forms date_utils.normalize_date_to_iso
+# Only date forms date_utils.normalize_date_to_iso
 # understands. Relative forms are intentionally kept RAW in the emitted args:
 # resolving "tomorrow" to an ISO date at generation time would bake the
 # generation date into the weights. Python normalises downstream, exactly as
@@ -310,7 +263,6 @@ ISO_DATE_POOL: List[str] = [
     for day in (4, 11, 17, 23, 28)
 ]
 
-# --- times ---------------------------------------------------------------
 # (user phrasing, normalised HH:MM). Times ARE normalised in the emitted args:
 # the mapping is calendar-independent, the Phase-2 prompt asks for HH:MM, and
 # memory always stores HH:MM.
@@ -330,7 +282,6 @@ TIME_PHRASES: List[Tuple[str, str]] = [
     ("13:15", "13:15"),
 ]
 
-# --- party sizes ---------------------------------------------------------
 # Phrasings that both the model and the Python guards
 # (planner_agent.extract_party_size_from_text) resolve identically.
 # Standalone clauses — drop into a sentence as-is ("18 Nov, table for two").
@@ -367,7 +318,6 @@ PARTY_COUNT_PHRASES: List[Tuple[str, int]] = [
     ("10 people", 10),
 ]
 
-# --- emails --------------------------------------------------------------
 EMAIL_LOCALS = [
     "nina.rao", "arjun.m", "devika.s", "farhan.k", "meera93", "rohit.b",
     "tanvi.p", "yusuf.a", "lakshmi.n", "kabir.d", "shreya.v", "imran.q",
@@ -395,7 +345,6 @@ SEATING_PHRASES: List[Tuple[str, str]] = [
     ("indoor seating", "indoor"),
 ]
 
-# --- canonical replies ---------------------------------------------------
 # Index 0 of each bank is the exact wording from the phase prompt / the
 # deterministic guard; the rest are variants that keep the same key substrings
 # the eval scorer matches on ("date", "guests"/"how many", "email", "confirm",
@@ -477,8 +426,6 @@ REPLY_BANKS: Dict[str, List[str]] = {
         "Understood — I'll hold off on the reservation until you're ready.",
     ],
 }
-
-# --- user utterance banks -------------------------------------------------
 
 CUISINE_ONLY_TEMPLATES = [
     "craving {cuisine} tonight",
@@ -718,10 +665,6 @@ BOOKING_SEATING_ONLY_TEMPLATES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Small helpers used by the rule engine
-# ---------------------------------------------------------------------------
-
 def reply(rng: random.Random, bank: str) -> Dict[str, Any]:
     """Build a `plan=reply` decision.
 
@@ -785,12 +728,8 @@ def case(name: str, group: str, phase: str, memory: Dict[str, Any],
     }
 
 
-# ---------------------------------------------------------------------------
-# RULE ENGINE — Phase 1 (discovery)
-#
-# Encodes the Phase-1 prompt's decision table plus the deterministic guards
-# planner_agent applies on top of it.
-# ---------------------------------------------------------------------------
+# RULE ENGINE — discovery phase. Encodes the Phase-1 prompt's decision table
+# plus the deterministic guards planner_agent applies on top of it.
 
 def d_cuisine_only(rng: random.Random) -> Dict[str, Any]:
     """cuisine and nothing else -> ask for more filters (never search)."""
@@ -899,14 +838,10 @@ def d_named_restaurant(rng: random.Random) -> Dict[str, Any]:
                 recent_results=results)
 
 
-# ---------------------------------------------------------------------------
-# RULE ENGINE — Phase 2 (availability)
-#
-# THE CORE INVARIANT: in this phase the planner NEVER emits create_reservation.
-# A stated time means "verify that slot", i.e. check_availability. This is the
-# 1.7B's dominant measured failure (8 of its 13 failed conversations) and the
+# RULE ENGINE — availability phase. CORE INVARIANT: the planner NEVER emits
+# create_reservation here; a stated time means check_availability. This is the
+# 1.7B's dominant measured failure (8 of 13 failed conversations) and the
 # reason this dataset exists.
-# ---------------------------------------------------------------------------
 
 def _avail_restaurant(rng: random.Random) -> str:
     return load_seed_corpus().restaurant(rng)["unit_name"]
@@ -1048,9 +983,7 @@ def a_seating_request(rng: random.Random) -> Dict[str, Any]:
 # the booking phase and is covered by b_missing_email.
 
 
-# ---------------------------------------------------------------------------
-# RULE ENGINE — Phase 3 (booking)
-# ---------------------------------------------------------------------------
+# RULE ENGINE — booking phase.
 
 def _booking_memory(rng: random.Random, *, email: Optional[str] = None,
                     seating: Optional[str] = None,
@@ -1161,12 +1094,8 @@ def b_missing_party(rng: random.Random) -> Dict[str, Any]:
                 reply(rng, "booking_party"))
 
 
-# ---------------------------------------------------------------------------
-# RULE ENGINE — edge guards
-#
-# Each mirrors a deterministic guard in planner_agent, so the model agrees with
-# the Python layer instead of fighting it.
-# ---------------------------------------------------------------------------
+# RULE ENGINE — edge guards. Each mirrors a deterministic guard in
+# planner_agent, so the model agrees with the Python layer instead of fighting it.
 
 def e_party_zero_or_negative(rng: random.Random) -> Dict[str, Any]:
     """party_size 0 or negative -> re-ask, never store, never execute."""
@@ -1230,12 +1159,8 @@ def e_out_of_scope(rng: random.Random) -> Dict[str, Any]:
                 memory_state("discovery"), user, reply(rng, "discovery_clarify"))
 
 
-# ---------------------------------------------------------------------------
-# Case registry + weights
-#
-# Weights are within-group. Group sizes come from GROUP_WEIGHTS and are
-# allocated deterministically, so `--n` splits reproducibly.
-# ---------------------------------------------------------------------------
+# Case registry. Weights are within-group; group sizes come from GROUP_WEIGHTS
+# and are allocated deterministically, so `--n` splits reproducibly.
 
 CaseBuilder = Callable[[random.Random], Dict[str, Any]]
 
@@ -1318,9 +1243,7 @@ def generate_cases(n: int, rng: random.Random) -> List[Dict[str, Any]]:
     return cases
 
 
-# ---------------------------------------------------------------------------
-# Validation (fail loudly rather than train on a broken target)
-# ---------------------------------------------------------------------------
+# Validation — fail loudly rather than train on a broken target.
 
 def validate_record(record: Dict[str, Any]) -> None:
     """Assert one record satisfies every contract the runtime enforces."""
@@ -1354,10 +1277,6 @@ def validate_record(record: Dict[str, Any]) -> None:
         if not plan["args"].get("customer_email"):
             raise ValueError("create_reservation without customer_email")
 
-
-# ---------------------------------------------------------------------------
-# Split + manifest + IO
-# ---------------------------------------------------------------------------
 
 def split_train_val(
     records: List[Dict[str, Any]], val_split: float, rng: random.Random,
@@ -1437,10 +1356,6 @@ def generate_dataset(n: int, seed: int, val_split: float) -> Tuple[
         validate_record(rec)
     return split_train_val(records, val_split, rng)
 
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(

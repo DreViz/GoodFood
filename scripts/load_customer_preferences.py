@@ -4,14 +4,11 @@ from datetime import date
 from app.data.db_connection import SessionLocal, engine
 from app.data.db_models import Base, Customer, CustomerPreferences
 
-# --- STEP 1: Ensure table exists ---
 print("Creating missing tables if any...")
 Base.metadata.create_all(bind=engine)
 
-# --- STEP 2: Open session ---
 session = SessionLocal()
 
-# --- STEP 3: Optional: Insert demo customers if not present ---
 demo_customers = [
     {"name": "John Doe", "email": "john@example.com"},
     {"name": "Alice Smith", "email": "alice@example.com"},
@@ -27,7 +24,6 @@ for cust_data in demo_customers:
     else:
         print(f"Customer already exists: {existing.email}")
 
-# --- STEP 4: Insert customer preferences ---
 preferences_data = [
     {
         "email": "john@example.com",
@@ -55,7 +51,6 @@ for pref_data in preferences_data:
             print(f"Customer not found for {pref_data['email']} — skipping.")
             continue
 
-        # Check if preferences already exist
         existing_pref = (
             session.query(CustomerPreferences)
             .filter_by(customer_id=cust.id)

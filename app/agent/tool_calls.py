@@ -1,4 +1,3 @@
-# app/agent/tool_calls.py
 import json
 import logging
 import re
@@ -154,11 +153,10 @@ def recommend_venues(cuisine=None, max_price=None, tags=None, query=None, limit=
         (cuisine + tags + free-text query). This is the genuine "recommend me
         something" path.
 
-    Also fixes a latent bug: ``tags`` was accepted but never applied as a SQL
-    filter. It is now folded into the semantic query string (tags are soft
-    semantics, not exact predicates — "romantic" matches even when the DB
-    stores "date-night"). Falls back to ilike/rating order if the embedding
-    model is unavailable.
+    Tags are soft semantics, not exact predicates — they fold into the
+    semantic query string ("romantic" matches even when the DB stores
+    "date-night"). Falls back to ilike/rating order if the embedding model
+    is unavailable.
     """
     session = SessionLocal()
     try:
@@ -340,13 +338,11 @@ def _normalize_date(d: str) -> str:
 def _normalize_time(t: str) -> str:
     """Convert any user time form to 24-hour HH:MM.
 
-    The twin of _normalize_date (BUG-1 sibling). The slot manager emits
-    slots as "19:30" (24-hour), but the planner often passes "7:30pm" /
-    "8 pm" verbatim. Without normalization here, the ``time in all_slots``
-    comparison NEVER matches a 12-hour input — so is_available is always
-    False, the phase never advances to booking, and every C-case cascades
-    to failure. normalize_time maps "7:30pm"->"19:30", "8pm"->"20:00".
-    Returns the original string if it can't be interpreted.
+    The slot manager emits slots as "19:30", but the planner often passes
+    "7:30pm" / "8 pm" verbatim — and an unnormalized 12-hour input never
+    matches a slot, so is_available is always False and the flow never
+    advances to booking. normalize_time maps "7:30pm"->"19:30", "8pm"->
+    "20:00". Returns the original string if it can't be interpreted.
     """
     if not t:
         return t
@@ -374,9 +370,7 @@ def check_availability(location_id: Optional[int] = None, restaurant: Optional[s
             return {"ok": False, "error": slots_data.get("error", "No available slots.")}
 
         if time:
-            # Normalize BEFORE the comparison so "7:30pm" matches slot "19:30".
-            # Without this, is_available is always False for 12-hour inputs and
-            # the phase never advances to booking (root cause of booking 0/9).
+            # Normalize before the comparison so "7:30pm" matches slot "19:30".
             time = _normalize_time(time)
             all_slots = [s["time"] for s in slots_data.get("available_slots", [])]
             is_available = time in all_slots
@@ -416,7 +410,6 @@ def create_reservation(
     """
     session = SessionLocal()
     try:
-        # Validate inputs
         if not restaurant:
             return {"ok": False, "error": "Missing required restaurant name."}
         if not customer_email or "@" not in customer_email:
@@ -428,13 +421,11 @@ def create_reservation(
         if not party_size:
             return {"ok": False, "error": "Missing required party_size."}
 
-        # Resolve restaurant -> record
         rest = _resolve_restaurant_to_location(session, restaurant=restaurant, location_id=None)
         if not rest:
             return {"ok": False, "error": f"Restaurant '{restaurant}' not found."}
         location_id = rest.location_id
 
-        # Ensure customer exists
         cust = session.query(Customer).filter_by(email=customer_email).first()
         if not cust:
             cust = Customer(name="Guest", email=customer_email)
@@ -442,7 +433,6 @@ def create_reservation(
             session.commit()
             session.refresh(cust)
 
-        # Create reservation
         reservation = Reservation(
             customer_id=cust.id,
             restaurant_id=rest.id,
@@ -456,10 +446,9 @@ def create_reservation(
         session.commit()
         session.refresh(reservation)
 
-        # Email sending (best effort)
+        # best-effort confirmation email — the reservation stands regardless
         email_sent = True
         try:
-            # send_email signature is (recipient, subject, body) — see email_service.py
             send_email(
                 cust.email,
                 "Your GoodFoods reservation is confirmed!",
@@ -476,7 +465,6 @@ def create_reservation(
             email_sent = False
             logger.error(f"Email delivery failed (ignored): {e}")
 
-        # Return reservation result INCLUDING email_sent flag
         return {
             "ok": True,
             "restaurant": rest.unit_name,
@@ -616,7 +604,6 @@ def modify_reservation(
 
         reservation, restaurant, cust = found
 
-        # Validate new party size if provided.
         if new_party_size is not None:
             try:
                 new_party_size = int(new_party_size)
@@ -643,7 +630,6 @@ def modify_reservation(
                     "available_slots": available,
                 }
 
-        # Apply changes (only supplied fields).
         reservation.date = eff_date
         reservation.time = eff_time
         reservation.party_size = eff_party
@@ -706,7 +692,6 @@ def get_seating_labels(restaurant: Optional[str] = None, location_id: Optional[i
     finally:
         session.close()
 
-# TOOL FUNCTIONS map and dispatcher
 TOOL_FUNCTIONS = {
     "search_restaurants_by_filters": search_restaurants,
     "recommend_venues": recommend_venues,
@@ -759,13 +744,12 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 return {"error": f"Restaurant '{restaurant_name}' not found."}
 
-        # BUG-10: drop kwargs the target function cannot accept.
-        # qwen3:4b sometimes routes an availability-style turn to
-        # search_restaurants_by_filters with date/party_size/group_size in the
-        # args. search_restaurants() has no such params (and no **kwargs), so the
-        # call raises TypeError and the whole turn errors out. Filter args to
-        # the function's declared parameters; functions that accept **kwargs
-        # (check_availability, modify_reservation) keep everything.
+        # Drop kwargs the target function cannot accept. The model sometimes
+        # routes an availability-style turn to search_restaurants_by_filters
+        # with date/party_size in the args; search_restaurants() has no such
+        # params (and no **kwargs), so the call would raise TypeError. Filter
+        # to the function's declared parameters — functions that accept
+        # **kwargs (check_availability, modify_reservation) keep everything.
         import inspect as _inspect
         _sig = _inspect.signature(func)
         _accepts_var_kw = any(
@@ -779,7 +763,6 @@ def dispatch_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning("[Dispatch] Dropped unsupported kwargs for %s: %s", name, list(_dropped))
             normalized_args = {k: v for k, v in normalized_args.items() if k in _valid}
 
-        # Execute tool
         logger.info("Executing tool function: %s", func.__name__)
         result = func(**normalized_args)
 

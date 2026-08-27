@@ -92,7 +92,7 @@ def main():
     print(f" endpoint={settings.ollama_generate_url}")
     print("=" * 68)
 
-    # --- Setup: find a genuinely available slot for the target restaurant ---
+    # Find a genuinely available slot for the target restaurant.
     date, slot = pick_available_slot(get_available_slots, 30)
     if not slot:
         print(red("FAIL: no available slot found for the test restaurant in the next 7 days."))
@@ -101,11 +101,9 @@ def main():
 
     cleanup(SessionLocal, Reservation, Customer, date)
 
-    # --- Reset conversation state ---
     memory.reset()
     agent_module.recent_results.clear()
 
-    # --- Scripted conversation ---
     turns = [
         "Any Italian restaurants in the East zone?",
         f"Let's go with {TEST_RESTAURANT}.",
@@ -152,7 +150,6 @@ def main():
                 print(dim(f"   ok   : {tool_result.get('ok')}  {tool_result.get('error','')}"))
         print()
 
-    # --- Verify a reservation actually landed in the DB ---
     session = SessionLocal()
     try:
         cust = session.query(Customer).filter_by(email=TEST_EMAIL).first()
@@ -161,7 +158,6 @@ def main():
     finally:
         session.close()
 
-    # --- Scorecard ---
     print("-" * 68)
     booked_ok = bool(booking_result and booking_result.get("ok"))
     checks = [
@@ -180,7 +176,6 @@ def main():
     print("-" * 68)
     print((green(" SMOKE TEST PASSED") if passed else red(" SMOKE TEST FAILED")))
 
-    # --- Cleanup so the test is repeatable ---
     cleanup(SessionLocal, Reservation, Customer, date)
 
     return 0 if passed else 1

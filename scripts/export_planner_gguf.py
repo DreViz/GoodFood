@@ -1,25 +1,13 @@
 #!/usr/bin/env python
-"""
-Phase 8 — merge the planner LoRA into the base model and export GGUF Q4_K_M.
+"""Merge the planner LoRA into the base model and export GGUF Q4_K_M.
 
-Takes the adapter produced by `scripts/train_planner_qlora.py`, merges it into
+Takes the adapter from train_planner_qlora.py, merges it into
 `unsloth/Qwen3-1.7B`, quantises to Q4_K_M (the project's quantization floor —
-see docs/model_specs.md) and writes a single GGUF that Ollama can serve, so the
-fine-tuned planner drops into the existing runtime by changing one env var
-(`OLLAMA_MODEL=goodfoods-planner`).
+docs/model_specs.md) and writes a GGUF Ollama can serve, so the fine-tuned
+planner drops into the runtime by changing one env var. ML imports are deferred
+so --dry-run works anywhere.
 
-As with the trainer, nothing ML-related is imported at module level: `--dry-run`
-works on any machine.
-
-USAGE
------
-    python -m scripts.export_planner_gguf --dry-run     # check inputs only
-    python -m scripts.export_planner_gguf               # real export
-
-OUTPUT
-------
-    gguf/goodfoods-planner-q4km.gguf
-    then: ollama create goodfoods-planner -f Modelfile.goodfoods-planner
+    python -m scripts.export_planner_gguf [--dry-run]
 """
 from __future__ import annotations
 

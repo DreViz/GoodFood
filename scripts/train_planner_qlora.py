@@ -1,33 +1,14 @@
 #!/usr/bin/env python
-"""
-Phase 8 — QLoRA fine-tune of the GoodFoods planner (Unsloth + TRL).
+"""QLoRA fine-tune of the GoodFoods planner (Unsloth + TRL).
 
-Trains LoRA adapters on top of a frozen 4-bit `unsloth/Qwen3-1.7B` so the small
-model learns the 3-phase PROCEDURE it currently gets wrong: at 71.1% overall it
-scores just 44.4% on booking, and its dominant failure is emitting
-`create_reservation` without ever running `check_availability`
-(see reports/eval_summary.md).
+Trains LoRA adapters on a frozen 4-bit `unsloth/Qwen3-1.7B` so the small model
+learns the 3-phase procedure its 71.1% eval score shows it gets wrong — chiefly
+emitting create_reservation without a prior check_availability. The ML stack is
+imported only inside run_training(), so --dry-run validates data + config on
+any machine.
 
-Nothing here runs on import: torch, unsloth, trl and datasets are imported
-inside `run_training()`, so `--dry-run` works on any machine — no CUDA, no ML
-stack, no model download.
-
-USAGE
------
-    # validate data + hyperparameters anywhere (no GPU, no ML deps)
     python -m scripts.train_planner_qlora --dry-run
-
-    # the real run, on the 4 GB laptop GPU
-    python -m scripts.train_planner_qlora \
-        --data data/planner_train.jsonl \
-        --val-data data/planner_train_val.jsonl
-
-OUTPUTS
--------
-    adapters/planner_lora/        LoRA adapter + tokenizer (what gets merged)
-    adapters/training_log.json    [{step, train_loss, val_loss}, ...]
-    adapters/train_config.json    the exact resolved hyperparameters
-    adapters/sample_rendered.txt  first training example after chat templating
+    python -m scripts.train_planner_qlora --data data/planner_train.jsonl
 """
 from __future__ import annotations
 
@@ -52,20 +33,14 @@ DEFAULT_TARGET_MODULES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="QLoRA fine-tune the GoodFoods planner (Unsloth).",
     )
-    # Data
     p.add_argument("--data", default="data/planner_train.jsonl",
                    help="Training JSONL (chat format, one object per line).")
     p.add_argument("--val-data", default=None,
                    help="Validation JSONL. Default: <data-stem>_val.jsonl if present.")
-    # Model / adapter
     p.add_argument("--base-model", default="unsloth/Qwen3-1.7B",
                    help="Base model tag. Loaded in 4-bit (QLoRA).")
     p.add_argument("--max-seq-len", type=int, default=2048)
@@ -76,7 +51,6 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Comma-separated LoRA target modules.")
     p.add_argument("--no-4bit", dest="load_in_4bit", action="store_false",
                    help="Load the base model in 16-bit instead of 4-bit (needs more VRAM).")
-    # Optimisation
     p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--lr-scheduler", default="cosine")
     p.add_argument("--warmup-steps", type=int, default=20)
@@ -93,7 +67,6 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--eval-steps", type=int, default=50)
     p.add_argument("--packing", action="store_true",
                    help="Enable sequence packing (off by default — samples are short).")
-    # Output
     p.add_argument("--output-dir", default="adapters/planner_lora",
                    help="Where the LoRA adapter is saved.")
     p.add_argument("--checkpoint-dir", default="adapters/checkpoints",
@@ -109,10 +82,6 @@ def _resolve(path_str: str) -> Path:
     path = Path(path_str)
     return path if path.is_absolute() else REPO_ROOT / path
 
-
-# ---------------------------------------------------------------------------
-# Dataset loading + validation
-# ---------------------------------------------------------------------------
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     """Read a chat-format JSONL file, failing loudly on a malformed row."""
@@ -209,10 +178,6 @@ def length_warning(rows: List[Dict[str, Any]], max_seq_len: int) -> Optional[str
     )
 
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 def build_config(args: argparse.Namespace) -> Dict[str, Any]:
     """The full resolved hyperparameter set — dumped in dry-run and at train time."""
     return {
@@ -253,10 +218,6 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
         "log_file": str(_resolve(args.log_file)),
     }
 
-
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
 
 def _filtered_kwargs(cls, kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Keep only kwargs `cls.__init__` accepts.
@@ -490,10 +451,6 @@ def run_training(args: argparse.Namespace, config: Dict[str, Any],
     print("  python -m scripts.export_planner_gguf")
     return 0
 
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
     args = parse_args(argv)

@@ -1,10 +1,7 @@
 # app/api/schemas.py
 """
-Pydantic request/response schemas for the HTTP surface (Phase 2 / WS2).
-
-Centralising these keeps validation consistent across the agent chat endpoint
-and the shortcut endpoints (/search, /availability, /book) consumed by the
-frontend and the Phase 3 eval harness.
+Pydantic request/response schemas shared by the agent chat endpoint and the
+shortcut endpoints (/search, /availability, /book).
 """
 from typing import Any, Dict, Optional
 

@@ -4,7 +4,6 @@ from app.data.db_connection import SessionLocal
 from app.data.db_models import Restaurant
 from sqlalchemy import text
 
-# Define a standard opening hours template
 DEFAULT_HOURS = {
     "mon_thu": "12:00-15:30,19:00-23:00",
     "fri": "12:00-16:00,19:00-23:30",

@@ -1,15 +1,12 @@
 """
 Controlled A/B/C/D diagnostic for the planner decision regression.
 
-After the /api/chat + format=json refactor the integrated planner call started
-emitting safe "Could you clarify" replies for inputs that the isolated test
-handled correctly. The likely culprit is the structural noise in the user
-message (three JSON context blobs + a "User Message:" prefix), which does not
-match the format of the examples in the phase prompt.
-
-This script runs four message-structure variants against the Phase-1 smoke
-inputs (A01/A02/A06/A07/A08) and prints per-variant pass rates so we can pick
-the structure that recovers correct decisions.
+When the integrated planner call started emitting safe "Could you clarify"
+replies for inputs the isolated test handled correctly, the likely culprit was
+structural noise in the user message (three JSON context blobs + a
+"User Message:" prefix) not matching the phase prompt's example format. This
+script runs four message-structure variants against the Phase-1 smoke inputs
+(A01/A02/A06/A07/A08) and prints per-variant pass rates.
 
 Read-only: hits Ollama only, no DB, no agent flow.
 """
@@ -82,8 +79,6 @@ def is_pass(decision, expected):
         return plan == "execute" and payload == exp_action
     return False
 
-
-# --- variant builders ---------------------------------------------------
 
 def v1_current(phase1, user_text):
     """Replicates the current integrated user message exactly."""

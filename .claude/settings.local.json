@@ -23,7 +23,9 @@
       "Bash(.venv-train/Scripts/python.exe *)",
       "Bash(ollama create *)",
       "Bash(curl -sL -o /tmp/llamacpp.zip https://codeload.github.com/ggml-org/llama.cpp/zip/refs/heads/master)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(wc -l app/agent/*.py app/api/*.py app/api/routes/*.py app/api/utils/*.py app/retrieval/*.py app/data/*.py app/config.py scripts/*.py tests/**/*.py)",
+      "Bash(curl -s -m 5 http://127.0.0.1:11434/api/tags)"
     ]
   }
 }

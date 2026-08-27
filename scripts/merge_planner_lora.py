@@ -1,28 +1,16 @@
 #!/usr/bin/env python
-"""Phase 8 — merge the planner LoRA into a 16-bit safetensors directory.
+"""Merge the planner LoRA into a 16-bit safetensors directory.
 
-Compiler-free alternative to scripts/export_planner_gguf.py: instead of
-compiling llama.cpp locally (needs CMake + MSVC on Windows), we produce a
-merged 16-bit HuggingFace-format model and let Ollama's BUILT-IN converter
-handle GGUF conversion + Q4_K_M quantization at `ollama create` time:
+Compiler-free alternative to scripts/export_planner_gguf.py: no local llama.cpp
+build (CMake + MSVC on Windows) — Ollama's built-in converter handles GGUF
+conversion + Q4_K_M quantization at `ollama create` time. Same quantization
+floor (docs/model_specs.md), same runtime path. The GGUF script remains for
+machines with a C++ toolchain. Merging from the 4-bit-loaded base is the
+standard Unsloth export flow: the dequantize->merge->requantize round trip is
+what save_pretrained_gguf does internally, and the final Q4_K_M quantization
+dominates any precision delta.
 
-    ollama create goodfoods-planner --quantize q4_K_M -f Modelfile.goodfoods-planner
-
-Same quantization floor (Q4_K_M, docs/model_specs.md), same runtime path,
-same env-var swap. The GGUF script remains for machines with a C++ toolchain.
-
-Merging from the 4-bit-loaded base is the standard Unsloth export flow: the
-dequantize->merge->requantize round trip is what save_pretrained_gguf does
-internally, and the final Q4_K_M quantization dominates any precision delta.
-
-USAGE
------
-    .venv-train/Scripts/python.exe -m scripts.merge_planner_lora
-    .venv-train/Scripts/python.exe -m scripts.merge_planner_lora --dry-run
-
-OUTPUT
-------
-    gguf/_merged_fp16/   config.json + model safetensors + tokenizer
+    .venv-train/Scripts/python.exe -m scripts.merge_planner_lora [--dry-run]
 """
 from __future__ import annotations
 

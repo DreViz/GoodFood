@@ -42,7 +42,7 @@
 | 3 — Eval harness | ✅ done | 45 cases; **qwen3:4b = 42/45 (93.3%)** after bug-fix pass |
 | (bonus) Semantic search | ✅ done | Hybrid retrieval, in-memory embedding index |
 | 4 — Model comparison | ✅ done | 1.7B **71.1%** vs 4B **93.3%** → 4B selected; `reports/eval_summary.md` |
-| **6 — README** | 🔄 active | README + CLAUDE.md + docs rewritten & committed; UI screenshots + video pending |
+| **6 — README** | 🔄 active | README + docs rewritten & committed; UI screenshots + video pending |
 | 7 — Deploy | ⬜ later | — |
 | **8 — QLoRA fine-tune** | ✅ **done** (2026-08-22) | Tuned 1.7B = **91.1%** (base 71.1%, 4B 93.3%); booking 44.4%→77.8%; premature-booking failure eliminated; held-out 9/10. Served as `goodfoods-planner` (Q4_K_M, 1.1 GB, 100% GPU) |
 
@@ -236,7 +236,7 @@ search → availability → booking conversation against `qwen3:4b`.
    - `responder_agent.py:10-11` → same.
    - Both call `{base_url}/api/generate` and pass `settings.ollama_model`.
 6. **Add `.env.example`** with all keys + documented defaults.
-7. **Update `CLAUDE.md`** Key Configuration section to reflect env-var names.
+7. **Update the README** key-configuration section to reflect env-var names.
 8. **Write `scripts/smoke_test.py`** — no test framework, just a runnable script:
    - Resets conversation memory.
    - Sends three canned user turns through `process_user_query`:
@@ -306,7 +306,7 @@ the whole time.
    - Adds ~2–3 h to Phase 2 vs Option A.
 5. **Remove dead `/agent/memory/update` endpoint (B6)** and the unused
    `conversation_memory` instance in `main.py`. Memory flows through the planner
-   instance only. Update CLAUDE.md.
+   instance only.
 6. **Add Pydantic schemas.** New file `app/api/schemas.py`:
    - `ChatRequest { message: str, session_id: str | None }`
    - `ChatResponse { reply: str, tool_output: dict | None, phase: str }`
@@ -530,7 +530,7 @@ the build passes `npm run build` cleanly.
 ### Decision: delete Streamlit now?
 Yes. At the end of this phase, `app/main.py` (Streamlit) gets moved to
 `legacy/streamlit_app.py` for git-history reference and removed from the
-recommended run path. README and CLAUDE.md updated.
+recommended run path. README updated.
 
 ### Tasks
 1. **Scaffold** (in `frontend/`, separate from `app/`):
@@ -579,7 +579,7 @@ recommended run path. README and CLAUDE.md updated.
      cleanly to Tailwind tokens).
 10. **`npm run build` passes.** Fix any TypeScript errors.
 11. **Remove Streamlit:** move `app/main.py` → `legacy/streamlit_app.py`,
-    remove Streamlit from `requirements.txt`, update `CLAUDE.md` Frontend
+    remove Streamlit from `requirements.txt`, update the README Frontend
     section, update README run instructions.
 
 ### Approval gate
@@ -623,7 +623,7 @@ new UI.
 2. Generate Mermaid diagram, render-check it on GitHub.
 3. Take UI screenshots after Phase 5.
 4. Record 60-sec walkthrough video; link from README (can defer to Phase 7).
-5. Update `CLAUDE.md` if any phase changed conventions.
+5. Update the docs if any phase changed conventions.
 
 ### Approval gate
 Full README review before Phase 7.

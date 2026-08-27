@@ -110,6 +110,10 @@ local_settings.py
 .env.test.local
 .env.production.local
 
+# Local dev tooling (kept on disk, not for the repo)
+.claude/
+CLAUDE.md
+
 # Eval output: timestamped per-run reports stay local. The summary + the
 # per-model reports it references are committed (negated below).
 reports/*

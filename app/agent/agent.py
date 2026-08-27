@@ -1,4 +1,3 @@
-# app/agent/agent.py
 import json
 import logging
 from typing import Any, Dict, Optional
@@ -10,11 +9,10 @@ from app.agent.tool_calls import dispatch_tool
 logger = logging.getLogger(__name__)
 
 
-# PER-USER CONTEXT (recent search results)
+# Recent search results, fed back into the planner's context each turn.
 recent_results: list = []
 
 
-# PARSE PLANNER OUTPUT
 def parse_planner_output(raw: Any) -> Dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -36,7 +34,6 @@ def process_user_query(
     logger.info(f"Incoming user message: {user_text}")
     logger.info(f"[AGENT] Memory BEFORE planner: {call_planner_llm.__module__}")
 
-    # 1 — CALL PLANNER
     raw_plan = call_planner_llm(
         user_text,
         context or "",
@@ -44,7 +41,6 @@ def process_user_query(
     )
     logger.info(f"Raw planner output: {raw_plan}")
 
-    # 2 — VALIDATE JSON
     try:
         plan_obj = parse_planner_output(raw_plan)
         logger.info(f"[AGENT] Parsed planner JSON: {plan_obj}")
@@ -56,18 +52,15 @@ def process_user_query(
     if not plan:
         return {"reply": "Could you clarify what you'd like me to do?"}
 
-    # 3 — PLAN → reply
     if plan == "reply":
         reply_txt = plan_obj.get("reply", "").strip()
         logger.info(f"[AGENT] reply text: {reply_txt}")
         return {"reply": reply_txt}
 
-    # 4 — PLAN → execute
     if plan == "execute":
         action = plan_obj.get("action")
         args = plan_obj.get("args", {}) or {}
 
-        # EXECUTE TOOL via dispatch_tool
         try:
             logger.info(f"Running tool: {action} args={args}")
             raw_tool_output = dispatch_tool(action, args)
@@ -106,7 +99,6 @@ def process_user_query(
         if action == "check_availability":
             update_phase_after_check_availability(tool_result)
 
-        # 5 — SEND STRUCTURED PAYLOAD TO RESPONDER
         responder_payload = {
             "action": action,
             "args": args,

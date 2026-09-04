@@ -30,8 +30,12 @@ guessed. See [Model selection](#model-selection--the-4-gb-question) below.
 
 ## Demo
 
-- 🖥️ **Live UI** — Vercel URL pending (Phase 7 deployment).
-- 🎬 **60-sec walkthrough** — video pending, recorded with the Phase 7 deploy.
+No hosted instance — the model runs on a local GPU by design, and that
+constraint shaped the whole system (see
+[Model selection](#model-selection--the-4-gb-question)). Run it yourself via
+[Getting started](#getting-started), or read the
+[example conversations](#example-conversations) for real transcripts. A hosted
+demo and walkthrough video are on the [roadmap](#roadmap).
 
 ## Screenshots
 
@@ -429,8 +433,8 @@ Cancel/modify operate on the customer's most recent `confirmed` reservation
   the 4B's failure profile at 60% of its size. Details in
   [Model selection](#model-selection--the-4-gb-question) and
   [`docs/FINE_TUNING.md`](docs/FINE_TUNING.md).
-- 🚀 **Deployment (Phase 7)** — Vercel UI + containerized API + recorded demo,
-  with a documented bring-your-own-local-Ollama path.
+- 🚀 **Deployment (Phase 7, future work)** — Vercel UI + containerized API +
+  recorded demo, with a documented bring-your-own-local-Ollama path.
 - 🍽️ Product ideas — menu browsing and pre-ordering, seat-map visualization,
   richer vibe filters.
 
